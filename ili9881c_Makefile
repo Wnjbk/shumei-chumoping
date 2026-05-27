@@ -1,0 +1,15 @@
+KERNEL_DIR := /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
+MODULE_NAME = panel-ili9881c
+
+obj-m += $(MODULE_NAME).o
+
+all:
+	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) modules
+
+clean:
+	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) clean
+
+install:
+	sudo cp $(MODULE_NAME).ko /lib/modules/$(shell uname -r)/kernel/drivers/gpu/drm/panel/
+	sudo depmod -a
