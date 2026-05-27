@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+/plugin/;
+
+// Updated BOE BV050FWM overlay with GT911 touchscreen node
+// GT911 shares I2C bus with PCA9555 on i2c0mux/i2c@1
+// No IRQ pin -> polling mode
+
+/ {
+    compatible = "brcm,bcm2711";
+
+    fragment@0 {
+        target-path = "/soc/i2c0mux/i2c@1";
+        __overlay__ {
+            status = "okay";
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            pca9555: gpio@20 {
+                compatible = "nxp,pca9555";
+                reg = <0x20>;
+                gpio-controller;
+                #gpio-cells = <2>;
+                status = "okay";
+                gpio-line-names = "LCD_RST", "LCD_EN", "TP_RST", "TP_INT";
+            };
+
+            // GT911 touchscreen on same I2C bus
+            // irq-gpios is REQUIRED even in polling mode: the INT pin
+            // must be pulled high during init or GT911 won't scan.
+            gt911: touchscreen@5d {
+                compatible = "goodix,gt911";
+                reg = <0x5d>;
+                reset-gpios = <&pca9555 2 0>;
+                irq-gpios = <&pca9555 3 0>;
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&dsi1>;
+        __overlay__ {
+            status = "okay";
+            #address-cells = <1>;
+            #size-cells = <0>;
+            panel: panel@0 {
+                status = "okay";
+                compatible = "boe,bv050fwm";
+                reg = <0>;
+
+                reset-gpios = <&pca9555 0 1>;
+                backlight-gpios = <&pca9555 1 0>;
+
+                port {
+                    panel_in: endpoint {
+                        remote-endpoint = <&dsi1_out>;
+                    };
+                };
+            };
+
+            port {
+                dsi1_out: endpoint {
+                    remote-endpoint = <&panel_in>;
+                    data-lanes = <0 1>;
+                };
+            };
+        };
+    };
+
+    fragment@2 {
+        target = <&spidev0>;
+        __overlay__ {
+            status = "disabled";
+        };
+    };
+};
