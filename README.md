@@ -2,63 +2,138 @@
 
 BOE BV050FWM MIPI-DSI 面板 + GT911 触摸屏，树莓派 4B/CM4 完整驱动方案。
 
-## 文件说明
+## 硬件连接
 
-| 文件 | 说明 |
-|------|------|
-| `gt911_poll.c` | GT911 轮询模式触摸驱动 |
-| `Makefile` | GT911 驱动编译脚本 |
-| `boe-bv050fwm-overlay.dts` | DT overlay（PCA9555 + GT911 + DSI panel） |
-| `ili9881c_panel-ilitek-ili9881c.c` | ILI9881C MIPI-DSI 面板驱动（主文件） |
-| `ili9881c_panel-ili9881c.c` | ILI9881C 面板驱动（辅助文件） |
-| `ili9881c_Makefile` | ILI9881C 驱动编译脚本 |
-| `config.txt` | Pi 4B `/boot/firmware/config.txt` 参考配置 |
+BV050FWM 面板通过 40-pin FPC 连接，I2C 总线（i2c-10）上挂载：
 
-## GT911 轮询模式触摸驱动
+| 芯片 | I2C地址 | 功能 |
+|------|---------|------|
+| PCA9555 | 0x20 | GPIO 扩展器（LCD_RST, LCD_EN, TP_RST, TP_INT） |
+| GT911 | 0x5D | 触摸控制器 |
 
-适用于 GT911 INT 引脚通过 I2C GPIO 扩展器（PCA9555）连接、无法产生 CPU 中断的场景。
+PCA9555 引脚分配：
 
-### 工作原理
+| 引脚 | 标签 | 功能 |
+|------|------|------|
+| 0 | LCD_RST | 面板复位 |
+| 1 | LCD_EN | 背光使能 |
+| 2 | TP_RST | 触摸复位 |
+| 3 | TP_INT | 触摸中断（轮询模式下始终拉低） |
 
-- GT911 INT 引脚始终拉低（GPIOD_OUT_LOW），I2C 地址稳定为 0x5D
-- 通过轮询 GT911 状态寄存器 (0x814E) 获取触摸数据
-- 默认轮询间隔 10ms，分辨率 1280x720
+## 新板子完整部署流程
 
-### 编译
+### 1. 烧录系统
+
+树莓派 OS（Bookworm，64-bit），确保内核版本 ≥ 6.6。
+
+### 2. 编译并安装 DT overlay
 
 ```bash
-make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+# 编译
+dtc -@ -I dts -O dtb -o boe-bv050fwm.dtbo boe-bv050fwm-overlay.dts
+
+# 安装
+sudo cp boe-bv050fwm.dtbo /boot/firmware/overlays/
 ```
 
-### 部署
+### 3. 配置 /boot/firmware/config.txt
 
-1. 编译 DT overlay 放入 `/boot/firmware/overlays/`
-2. 在 `/boot/firmware/config.txt` 添加 `dtoverlay=boe-bv050fwm`
-3. 安装驱动模块到 `/lib/modules/$(uname -r)/kernel/drivers/input/touchscreen/`
-4. 运行 `depmod -a`，加载 `modprobe gt911_poll`
-5. 开机自启：`echo "gt911_poll" > /etc/modules-load.d/gt911.conf`
+添加以下内容：
 
-### 注意事项
+```ini
+# DSI 显示
+dtoverlay=vc4-kms-v3d
+dtoverlay=boe-bv050fwm
 
-- 需黑名单加载原生 goodix_ts 驱动：
-  ```bash
-  echo "blacklist goodix_ts" > /etc/modprobe.d/blacklist-goodix.conf
-  ```
+# I2C
+dtparam=i2c_vc=on
+```
 
-## ILI9881C MIPI-DSI 面板驱动
+### 4. 编译并安装 GT911 轮询驱动
 
-BOE BV050FWM 面板使用 ILI9881C 控制器，通过 DSI1 接口连接。
+```bash
+# 编译
+make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
 
-### 编译
+# 安装
+sudo cp gt911_poll.ko /lib/modules/$(uname -r)/kernel/drivers/input/touchscreen/
+sudo depmod -a
+```
+
+### 5. 编译并安装 ILI9881C 面板驱动（如果需要）
+
+内核通常已内置 `panel-ilitek-ili9881c` 模块。如需使用自定义版本：
 
 ```bash
 cd ili9881c/
 make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
-```
-
-### 部署
-
-```bash
 sudo cp panel-ili9881c.ko /lib/modules/$(uname -r)/kernel/drivers/gpu/drm/panel/
 sudo depmod -a
+```
+
+### 6. 禁用原生 Goodix 驱动
+
+```bash
+sudo sh -c 'echo "blacklist goodix_ts" > /etc/modprobe.d/blacklist-goodix.conf'
+sudo sh -c 'echo "install goodix_ts /bin/false" >> /etc/modprobe.d/blacklist-goodix.conf'
+```
+
+### 7. 配置开机自动加载模块
+
+```bash
+sudo sh -c 'echo "gt911_poll" > /etc/modules-load.d/gt911.conf'
+```
+
+### 8. 重启
+
+```bash
+sudo reboot
+```
+
+### 9. 验证
+
+```bash
+# 检查 I2C 设备
+sudo i2cdetect -y 10
+# 应看到 0x20 (PCA9555) 和 0x5D (GT911)
+
+# 检查 GPIO 状态
+cat /sys/kernel/debug/gpio | grep TP
+# TP_RST=out hi, TP_INT=out lo
+
+# 检查触摸输入设备
+cat /proc/bus/input/devices | grep -A5 GT911
+
+# 测试触摸事件
+od -x /dev/input/$(cat /proc/bus/input/devices | grep -A1 GT911 | grep -o 'event[0-9]*')
+```
+
+## 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `gt911_poll.c` | GT911 轮询模式触摸驱动源码 |
+| `Makefile` | GT911 驱动编译脚本 |
+| `boe-bv050fwm-overlay.dts` | DT overlay（PCA9555 + GT911 + DSI panel） |
+| `ili9881c_panel-ilitek-ili9881c.c` | ILI9881C MIPI-DSI 面板驱动 |
+| `ili9881c_panel-ili9881c.c` | ILI9881C 面板驱动（辅助） |
+| `ili9881c_Makefile` | ILI9881C 驱动编译脚本 |
+| `config.txt` | 树莓派 `/boot/firmware/config.txt` 参考配置 |
+
+## GT911 驱动技术说明
+
+- **地址稳定方案**：INT 引脚始终输出低电平（GPIOD_OUT_LOW），使 GT911 在 RST 上升沿采样到 INT=low，地址固定为 0x5D
+- **触摸检测**：轮询状态寄存器 0x814E，bit7=1 表示有触摸数据
+- **触摸上报**：此 GT911 变体不设置 p[0] bit7（触摸/释放标志），因此始终上报 `MT_TOOL_FINGER, true`
+- **配置写入**：驱动启动时检测 GT911 配置版本号（0x8047），若版本 ≠ 0 则保留现有配置，否则写入新配置
+- 轮询间隔默认 10ms，分辨率 1280x720
+
+## 替代文件
+
+在 `config/` 目录下提供了所有系统配置文件的参考副本，可直接使用：
+
+```
+config/config.txt                         → /boot/firmware/config.txt
+config/modules-load_gt911.conf            → /etc/modules-load.d/gt911.conf
+config/modprobe_blacklist-goodix.conf     → /etc/modprobe.d/blacklist-goodix.conf
 ```
