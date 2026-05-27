@@ -2,6 +2,12 @@
 
 BOE BV050FWM MIPI-DSI 面板 + GT911 触摸屏，树莓派 4B/CM4 完整驱动方案。
 
+## 一键安装
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Wnjbk/shumei-chumoping/master/install.sh | sudo bash
+```
+
 ## 硬件连接
 
 BV050FWM 面板通过 40-pin FPC 连接，I2C 总线（i2c-10）上挂载：
