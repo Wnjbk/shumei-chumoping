@@ -1,15 +1,28 @@
-KERNEL_DIR := /lib/modules/$(shell uname -r)/build
-PWD := $(shell pwd)
-MODULE_NAME = panel-ili9881c
+# ILI9881C MIPI-DSI panel driver
+# Build anywhere: just run 'make'
+#
+# NOTE: Before building, ensure these files are in the current directory
+# without the "ili9881c_" prefix:
+#   panel-ilitek-ili9881c.c
+#   panel-ili9881c.c
 
-obj-m += $(MODULE_NAME).o
+obj-m := panel-ili9881c.o
 
-all:
-	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) modules
+KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 
-clean:
-	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) clean
+all: modules
+
+modules:
+	@[ -d "$(KERNEL_SRC)" ] || { \
+		echo "ERROR: Kernel headers not found at $(KERNEL_SRC)"; \
+		echo "Install with: sudo apt install linux-headers-$(shell uname -r)"; \
+		exit 1; \
+	}
+	$(MAKE) -C $(KERNEL_SRC) M=$(CURDIR) modules
 
 install:
-	sudo cp $(MODULE_NAME).ko /lib/modules/$(shell uname -r)/kernel/drivers/gpu/drm/panel/
+	sudo cp panel-ili9881c.ko /lib/modules/$(shell uname -r)/kernel/drivers/gpu/drm/panel/
 	sudo depmod -a
+
+clean:
+	$(MAKE) -C $(KERNEL_SRC) M=$(CURDIR) clean

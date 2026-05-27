@@ -54,7 +54,8 @@ cp "${OVERLAY_NAME}.dtbo" "$BOOT_DIR/overlays/"
 
 # ---------- build GT911 driver ----------
 log "Building GT911 polling driver..."
-make -C "$KERNEL_SRC" M="$WORK_DIR/drivers" modules 2>&1 | tail -5 || err "GT911 driver build failed"
+cd "$WORK_DIR/drivers"
+make 2>&1 | tail -5 || err "GT911 driver build failed"
 
 log "Installing GT911 driver..."
 cp gt911_poll.ko "$KERNEL_SRC/kernel/drivers/input/touchscreen/" 2>/dev/null || \
@@ -70,7 +71,7 @@ cp ili9881c_panel-ilitek-ili9881c.c "$ILI_BUILD_DIR/"
 cp ili9881c_panel-ili9881c.c "$ILI_BUILD_DIR/"
 
 cd "$ILI_BUILD_DIR"
-make -C "$KERNEL_SRC" M="$ILI_BUILD_DIR" modules 2>&1 | tail -5 || warn "ILI9881C build failed — kernel may already have it"
+make 2>&1 | tail -5 || warn "ILI9881C build failed — kernel may already have it"
 
 if [ -f panel-ili9881c.ko ]; then
     log "Installing ILI9881C driver..."
