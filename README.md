@@ -126,6 +126,43 @@ od -x /dev/input/$(cat /proc/bus/input/devices | grep -A1 GT911 | grep -o 'event
 | `ili9881c_Makefile` | ILI9881C 驱动编译脚本 |
 | `config.txt` | 树莓派 `/boot/firmware/config.txt` 参考配置 |
 
+## 触摸校准
+
+`touch_calib.py` 提供触摸旋转与翻转的即时配置，无需重启。
+
+### 安装
+
+```bash
+sudo ln -s $(pwd)/touch_calib.py /usr/local/bin/touch_calib
+```
+
+### 两层结构
+
+| 层 | 作用 | 选项 |
+|----|------|------|
+| **base** | 硬件修正（换屏才改） | `normal`, `flip-x`, `flip-y` |
+| **rotate** | 匹配显示方向 | `0`, `90`, `180`, `270` |
+
+矩阵乘积顺序：`rotate × base`（先修正硬件，再旋转匹配显示）。
+
+### 常用命令
+
+```bash
+touch_calib show                   # 查看当前状态
+touch_calib set rotate 270         # 横屏（匹配 kanshi transform 270）
+touch_calib set rotate 0           # 竖屏
+touch_calib set base flip-y        # Y 轴翻转（硬件修正）
+touch_calib reset                  # 恢复出厂默认
+touch_calib save                   # 持久化（重启不丢）
+```
+
+每次 `set` 即时生效：写入 udev 规则 → 重绑 GT911 驱动 → 重启 labwc。
+
+### 状态文件
+
+- 运行时状态：`~/.config/touch_calib.state`
+- udev 规则：`/etc/udev/rules.d/98-gt911-calibration.rules`
+
 ## GT911 驱动技术说明
 
 - **地址稳定方案**：INT 引脚始终输出低电平（GPIOD_OUT_LOW），使 GT911 在 RST 上升沿采样到 INT=low，地址固定为 0x5D
