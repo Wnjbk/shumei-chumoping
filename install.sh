@@ -1,142 +1,138 @@
 #!/bin/bash
-# BOE BV050FWM + GT911 touchscreen auto-setup script
-# For Raspberry Pi 4B/CM4
-# Usage: chmod +x install.sh && sudo ./install.sh
+# BOE BV050FWM + GT911 touchscreen installer for fresh Raspberry Pi OS
+# Usage: curl -sSL https://raw.githubusercontent.com/Wnjbk/shumei-chumoping/master/install.sh | sudo bash
+# Or:    git clone https://github.com/Wnjbk/shumei-chumoping && cd shumei-chumoping && sudo bash install.sh
 
 set -e
 
-REPO_DRIVERS="https://github.com/Wnjbk/shumei-chumoping.git"
-REPO_MISC="https://github.com/Wnjbk/shumei-zawu.git"
-WORK_DIR="/tmp/rpi-touch-setup"
-BOOT_DIR="/boot/firmware"
-OVERLAY_NAME="boe-bv050fwm"
-KERNEL_SRC="/lib/modules/$(uname -r)/build"
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+KERNEL_VER=$(uname -r)
+BOOT_DIR=/boot/firmware
+OVERLAY_DIR=$BOOT_DIR/overlays
+MODULES_DIR=/lib/modules/$KERNEL_VER
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+echo "============================================"
+echo " BOE BV050FWM + GT911 Touch Installer"
+echo " Kernel: $KERNEL_VER"
+echo "============================================"
 
-log()  { echo -e "${GREEN}[+]${NC} $1"; }
-warn() { echo -e "${YELLOW}[!]${NC} $1"; }
-err()  { echo -e "${RED}[x]${NC} $1"; exit 1; }
-
-# ---------- privilege check ----------
-if [ "$(id -u)" -ne 0 ]; then
-    err "Please run as root: sudo ./install.sh"
+# ---- 1. Kernel headers ----
+if [ ! -f /lib/modules/$KERNEL_VER/build/Makefile ]; then
+    echo "[1/8] Installing kernel headers..."
+    apt update
+    apt install -y linux-headers-$KERNEL_VER
+else
+    echo "[1/8] Kernel headers OK"
 fi
 
-# ---------- dependency check ----------
-log "Checking dependencies..."
-for cmd in git dtc make gcc; do
-    command -v $cmd >/dev/null 2>&1 || err "$cmd not found. Install: apt install git device-tree-compiler make gcc"
+# ---- 2. config.txt ----
+echo "[2/8] Setting up config.txt..."
+cp $BOOT_DIR/config.txt $BOOT_DIR/config.txt.bak.$(date +%Y%m%d_%H%M%S)
+
+if ! grep -q "dtoverlay=boe-bv050fwm" $BOOT_DIR/config.txt 2>/dev/null; then
+    cat >> $BOOT_DIR/config.txt << 'CFGEOF'
+
+# === BOE BV050FWM Display + Touch ===
+dtparam=i2c_arm=on
+dtparam=i2c_vc=on
+dtoverlay=boe-bv050fwm
+dtoverlay=vc4-kms-v3d,cma-256
+display_auto_detect=0
+dtoverlay=dummy-csi-sensor,2lanes
+CFGEOF
+    echo "  config.txt updated"
+else
+    echo "  config.txt already configured"
+fi
+
+# ---- 3. DT overlay ----
+echo "[3/8] Installing DT overlay..."
+if [ -f "$REPO_DIR/boe-bv050fwm-overlay.dts" ]; then
+    dtc -@ -I dts -O dtb -o /tmp/boe-bv050fwm.dtbo "$REPO_DIR/boe-bv050fwm-overlay.dts"
+    cp /tmp/boe-bv050fwm.dtbo $OVERLAY_DIR/boe-bv050fwm.dtbo
+    echo "  DT overlay installed"
+else
+    echo "  WARN: boe-bv050fwm-overlay.dts not found"
+fi
+
+# ---- 4. Panel driver ----
+echo "[4/8] Building panel driver..."
+PANEL_SRC=/tmp/panel-build-$$
+rm -rf $PANEL_SRC
+mkdir -p $PANEL_SRC
+
+# Copy sources (try both naming conventions)
+for prefix in "" "ili9881c_"; do
+    for name in panel-ili9881c.c panel-ilitek-ili9881c.c; do
+        if [ -f "$REPO_DIR/${prefix}${name}" ]; then
+            cp "$REPO_DIR/${prefix}${name}" "$PANEL_SRC/$name"
+        fi
+    done
+    if [ -f "$REPO_DIR/${prefix}Makefile" ]; then
+        cp "$REPO_DIR/${prefix}Makefile" "$PANEL_SRC/Makefile"
+    fi
 done
 
-[ -d "$KERNEL_SRC" ] || err "Kernel headers not found at $KERNEL_SRC. Install: apt install linux-headers-$(uname -r)"
-
-# ---------- download ----------
-log "Downloading drivers from GitHub..."
-rm -rf "$WORK_DIR"
-mkdir -p "$WORK_DIR"
-cd "$WORK_DIR"
-
-git clone --depth 1 "$REPO_DRIVERS" drivers 2>/dev/null || err "Failed to clone $REPO_DRIVERS"
-git clone --depth 1 "$REPO_MISC" misc 2>/dev/null || warn "Failed to clone $REPO_MISC (non-critical)"
-
-cd "$WORK_DIR/drivers"
-
-# ---------- build DT overlay ----------
-log "Building DT overlay ($OVERLAY_NAME)..."
-dtc -@ -I dts -O dtb -o "${OVERLAY_NAME}.dtbo" boe-bv050fwm-overlay.dts || err "DT compile failed"
-
-log "Installing DT overlay to $BOOT_DIR/overlays/"
-cp "${OVERLAY_NAME}.dtbo" "$BOOT_DIR/overlays/"
-
-# ---------- build GT911 driver ----------
-log "Building GT911 polling driver..."
-cd "$WORK_DIR/drivers"
-make 2>&1 | tail -5 || err "GT911 driver build failed"
-
-log "Installing GT911 driver..."
-cp gt911_poll.ko "$KERNEL_SRC/kernel/drivers/input/touchscreen/" 2>/dev/null || \
-cp gt911_poll.ko "/lib/modules/$(uname -r)/kernel/drivers/input/touchscreen/"
-
-# ---------- build ILI9881C panel driver ----------
-log "Building ILI9881C panel driver..."
-cd "$WORK_DIR/drivers"
-ILI_BUILD_DIR="$WORK_DIR/build-ili9881c"
-mkdir -p "$ILI_BUILD_DIR"
-cp ili9881c_Makefile "$ILI_BUILD_DIR/Makefile"
-cp ili9881c_panel-ilitek-ili9881c.c "$ILI_BUILD_DIR/"
-cp ili9881c_panel-ili9881c.c "$ILI_BUILD_DIR/"
-
-cd "$ILI_BUILD_DIR"
-make 2>&1 | tail -5 || warn "ILI9881C build failed — kernel may already have it"
-
-if [ -f panel-ili9881c.ko ]; then
-    log "Installing ILI9881C driver..."
-    cp panel-ili9881c.ko "/lib/modules/$(uname -r)/kernel/drivers/gpu/drm/panel/"
+if [ -f $PANEL_SRC/Makefile ] && [ -f $PANEL_SRC/panel-ili9881c.c ]; then
+    cd $PANEL_SRC
+    make -C /lib/modules/$KERNEL_VER/build M=$PANEL_SRC modules 2>&1 | tail -5
+    cp panel-ili9881c.ko $MODULES_DIR/kernel/drivers/gpu/drm/panel/
+    echo "  Panel driver installed"
+else
+    echo "  WARN: panel source not found, using built-in"
 fi
+cd "$REPO_DIR"
 
-# ---------- update module deps ----------
-log "Running depmod..."
-depmod -a
+# ---- 5. Clean old + blacklist ----
+echo "[5/8] Cleaning old drivers..."
+find /lib/modules -name "panel-ilitek-ili9881c.ko*" -delete 2>/dev/null || true
+rm -rf /var/lib/dkms/ili9881c /usr/src/ili9881c-* 2>/dev/null || true
 
-# ---------- blacklist goodix_ts ----------
-log "Blacklisting original goodix_ts driver..."
 cat > /etc/modprobe.d/blacklist-goodix.conf << 'EOF'
 blacklist goodix_ts
 install goodix_ts /bin/false
 EOF
+echo "  goodix_ts blacklisted"
 
-# ---------- autoload GT911 ----------
-log "Configuring autoload for GT911..."
-echo "gt911_poll" > /etc/modules-load.d/gt911.conf
-
-# ---------- config.txt ----------
-log "Updating $BOOT_DIR/config.txt..."
-CONFIG="$BOOT_DIR/config.txt"
-
-# Backup original
-[ -f "$CONFIG.bak" ] || cp "$CONFIG" "$CONFIG.bak"
-
-# Add required lines if missing
-add_if_missing() {
-    local line="$1"
-    if ! grep -qF "$line" "$CONFIG"; then
-        echo "$line" >> "$CONFIG"
-        log "  Added: $line"
-    fi
-}
-
-add_if_missing "dtoverlay=vc4-kms-v3d"
-add_if_missing "dtoverlay=${OVERLAY_NAME}"
-add_if_missing "dtparam=i2c_vc=on"
-
-# ---------- summary ----------
-echo
-log "============================================"
-log "Setup complete!"
-log "============================================"
-echo
-echo "  DT overlay  : ${BOOT_DIR}/overlays/${OVERLAY_NAME}.dtbo"
-echo "  GT911 driver: /lib/modules/$(uname -r)/kernel/drivers/input/touchscreen/gt911_poll.ko"
-echo "  Blacklist   : /etc/modprobe.d/blacklist-goodix.conf"
-echo "  Autoload    : /etc/modules-load.d/gt911.conf"
-echo "  Config      : ${BOOT_DIR}/config.txt (backup: ${BOOT_DIR}/config.txt.bak)"
-echo
-echo "  Verifying GT911 I2C..."
-modprobe gt911_poll 2>/dev/null || true
-sleep 1
-
-if i2cdetect -y 10 0x5d 0x5d 2>/dev/null | grep -q "5d"; then
-    log "GT911 detected at 0x5D!"
-elif i2cdetect -y 10 0x14 0x14 2>/dev/null | grep -q "14"; then
-    warn "GT911 at 0x14 instead of 0x5D. Try rebooting first."
+# ---- 6. GT911 touch driver ----
+echo "[6/8] Building GT911 driver..."
+if [ -f "$REPO_DIR/gt911_poll.c" ]; then
+    cp "$REPO_DIR/Makefile" /tmp/gt911_build_Makefile 2>/dev/null || true
+    cd "$REPO_DIR"
+    make clean 2>/dev/null || true
+    make 2>&1 | tail -3
+    cp gt911_poll.ko $MODULES_DIR/kernel/drivers/input/touchscreen/
+    echo "  GT911 driver installed"
 else
-    warn "GT911 not detected on i2c-10. Check hardware connection."
+    echo "  WARN: gt911_poll.c not found"
 fi
 
-echo
-log "Please reboot: sudo reboot"
-echo
+# ---- 7. Auto-load ----
+echo "[7/8] Configuring auto-load..."
+echo "gt911_poll" > /etc/modules-load.d/gt911.conf
+echo "panel-ili9881c" > /etc/modules-load.d/panel-boe.conf
+depmod -a
+echo "  Done"
+
+# ---- 8. touch_calib ----
+echo "[8/8] Installing touch_calib..."
+if [ -f "$REPO_DIR/touch_calib.py" ]; then
+    mkdir -p /home/xc/.config
+    mkdir -p /home/xc/shumei-chumoping
+    cp "$REPO_DIR/touch_calib.py" /home/xc/shumei-chumoping/touch_calib.py
+    chmod +x /home/xc/shumei-chumoping/touch_calib.py
+    ln -sf /home/xc/shumei-chumoping/touch_calib.py /usr/local/bin/touch_calib
+    /home/xc/shumei-chumoping/touch_calib.py reset 2>/dev/null || true
+    /home/xc/shumei-chumoping/touch_calib.py save 2>/dev/null || true
+    echo "  touch_calib ready"
+fi
+
+# ---- Final ----
+echo ""
+echo "Updating initramfs..."
+update-initramfs -u 2>&1 | tail -2
+
+echo ""
+echo "============================================"
+echo " Install complete!  sudo reboot"
+echo "============================================"
