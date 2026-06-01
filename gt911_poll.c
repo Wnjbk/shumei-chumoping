@@ -159,6 +159,22 @@ static int gt911_write_config(struct gt911_data *ts, u8 *cfg, int len)
 	return gt911_i2c_write(ts->client, GT911_REG_CFG_START, cfg, len);
 }
 
+/* GT911 firmware 0x41 from 192.168.16.29 - auto-flash on each boot */
+static const u8 gt911_fw_0x41[GT911_CFG_SIZE] = {
+	0x41, 0x00, 0x05, 0xD0, 0x02, 0x0A, 0x05, 0x00, 0x01, 0x08, 0x28, 0x05, 0x50, 0x32, 0x03, 0x05,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8A, 0x2A, 0x0C, 0x17, 0x15,
+	0x31, 0x0D, 0x00, 0x00, 0x01, 0xB9, 0x03, 0x2D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x64, 0x32,
+	0x00, 0x00, 0x00, 0x0F, 0x55, 0x94, 0xC5, 0x02, 0x07, 0x00, 0x00, 0x04, 0x94, 0x12, 0x00, 0x6E,
+	0x19, 0x00, 0x50, 0x24, 0x00, 0x3C, 0x33, 0x00, 0x2F, 0x48, 0x00, 0x2F, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x18, 0x16, 0x14, 0x12, 0x10, 0x0E, 0x0C, 0x0A, 0x08, 0x06, 0x04, 0x02, 0xFF, 0xFF, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+	0x04, 0x06, 0x08, 0x0A, 0x0F, 0x10, 0x12, 0x13, 0x16, 0x18, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21,
+	0x22, 0x24, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xCB, 0x00,
+};
+
 static int gt911_init_config(struct gt911_data *ts)
 {
 	u8 cfg[GT911_CFG_SIZE];
@@ -169,41 +185,22 @@ static int gt911_init_config(struct gt911_data *ts)
 	/* Check if GT911 already has valid config */
 	ret = gt911_i2c_read(ts->client, GT911_REG_CFG_VER, ver, 2);
 	if (ret == 0 && (ver[0] != 0 || ver[1] != 0)) {
-		dev_info(&ts->client->dev, "GT911 config v%02x%02x, keeping\n",
+		dev_info(&ts->client->dev, "GT911 config v%02x%02x, forcing flash of 0x41\n",
 			 ver[1], ver[0]);
-		goto skip_config;
+		/* Fall through to force-write the 0x41 firmware */
 	}
 
-	dev_info(&ts->client->dev, "Writing GT911 config for %ux%u\n",
-		 ts->input->absinfo[ABS_MT_POSITION_X].maximum,
-		 ts->input->absinfo[ABS_MT_POSITION_Y].maximum);
-	memcpy(cfg, gt911_default_cfg, GT911_CFG_SIZE);
-
-	/* Config layout at 0x8047: bytes 0-1=version, 2-3=X, 4-5=Y */
-	cfg[1] = 0x00;
-	cfg[2] = ts->input->absinfo[ABS_MT_POSITION_X].maximum & 0xFF;
-	cfg[3] = (ts->input->absinfo[ABS_MT_POSITION_X].maximum >> 8) & 0xFF;
-	cfg[4] = ts->input->absinfo[ABS_MT_POSITION_Y].maximum & 0xFF;
-	cfg[5] = (ts->input->absinfo[ABS_MT_POSITION_Y].maximum >> 8) & 0xFF;
-
-	/* Checksum: sum of bytes 0..183 + stored at [184-185] = 0 mod 65536 */
-	sum = 0;
-	for (i = 0; i < GT911_CFG_SIZE - 2; i++)
-		sum += cfg[i];
-	sum = (u16)(0 - sum);
-	cfg[GT911_CFG_SIZE - 2] = sum & 0xFF;
-	cfg[GT911_CFG_SIZE - 1] = (sum >> 8) & 0xFF;
-
-	dev_info(&ts->client->dev, "Config checksum = 0x%04x\n", sum);
+	dev_info(&ts->client->dev, "Writing GT911 firmware 0x41 via kernel i2c_transfer\n");
+	memcpy(cfg, gt911_fw_0x41, GT911_CFG_SIZE);
 
 	ret = gt911_write_config(ts, cfg, GT911_CFG_SIZE);
 	if (ret) {
 		dev_err(&ts->client->dev, "Failed to write config: %d\n", ret);
-		return ret;
+	} else {
+		dev_info(&ts->client->dev, "Config write OK, sleeping 100ms\n");
+		msleep(100);
 	}
-	msleep(100);
 
-skip_config:
 	/* Set read-coordinates mode */
 	{
 		u8 cmd = 0x00;
@@ -291,7 +288,7 @@ static int gt911_probe(struct i2c_client *client)
 	/*
 	 * Hardware reset for stable 0x5D address:
 	 * INT stays output-low permanently (polling mode, no IRQ needed).
-	 * RST: low → 1ms → high. INT=low at RST rising → addr 0x5D.
+	 * RST: low -> 1ms -> high. INT=low at RST rising -> addr 0x5D.
 	 */
 	if (ts->reset_gpio && ts->irq_gpio) {
 		usleep_range(1000, 2000);
@@ -324,8 +321,31 @@ static int gt911_probe(struct i2c_client *client)
 	input->id.bustype = BUS_I2C;
 	input->dev.parent = dev;
 
-	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 1280, 0, 0);
-	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 720, 0, 0);
+	/* Read GT911 config to get actual X/Y resolution */
+	{
+		u8 cfg_xy[6];
+		unsigned int x_max = 1280, y_max = 720;
+
+		ret = gt911_i2c_read(ts->client, GT911_REG_CFG_VER, cfg_xy, 6);
+		if (ret == 0) {
+			x_max = cfg_xy[1] | (cfg_xy[2] << 8);
+			y_max = cfg_xy[3] | (cfg_xy[4] << 8);
+			/* Sanity check: valid range 240..8192 */
+			if (x_max < 240 || x_max > 8192 ||
+			    y_max < 240 || y_max > 8192) {
+				dev_warn(dev, "GT911 config X=%u Y=%u out of range, falling back\n",
+					 x_max, y_max);
+				x_max = 1280;
+				y_max = 720;
+			}
+		} else {
+			dev_warn(dev, "Failed to read GT911 config, using default\n");
+		}
+		dev_info(dev, "GT911 touch resolution: %ux%u\n", x_max, y_max);
+
+		input_set_abs_params(input, ABS_MT_POSITION_X, 0, x_max, 0, 0);
+		input_set_abs_params(input, ABS_MT_POSITION_Y, 0, y_max, 0, 0);
+	}
 
 	ret = input_mt_init_slots(input, GT911_MAX_TOUCH,
 				  INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);

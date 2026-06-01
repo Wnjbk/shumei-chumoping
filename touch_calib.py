@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """GT911 touchscreen calibration — base fix + rotation, no reboot.
+Supports I2C (gt911_poll) and USB HID (QinHeng adapter).
 
   touch_calib set  base <flip-x|flip-y|normal>    Hardware fix (rarely changed)
   touch_calib set  rotate <0|90|180|270>          Match display rotation
@@ -8,10 +9,9 @@
   touch_calib save                                 Persist to udev
 
 The base fix operates on raw touch coordinates before rotation.
-This screen's hardware needs base=flip-y.
 """
 
-import subprocess, sys, os
+import subprocess, sys, os, glob
 
 BASE = {
     "normal": ("1 0 0 0 1 0",   ""),
@@ -28,8 +28,80 @@ ROTATE = {
 
 STATE_FILE = "/home/xc/.config/touch_calib.state"
 UDEV_RULE  = "/etc/udev/rules.d/98-gt911-calibration.rules"
-UDEV_MATCH = 'ENV{ID_INPUT_TOUCHSCREEN}=="1", ENV{ID_PATH}=="platform-fe205000.i2c"'
-GT911_BIND = "/sys/bus/i2c/drivers/gt911_poll"
+
+
+def detect_device():
+    """Auto-detect touchscreen: returns (udev_match, dev_id, bind_path)."""
+    # I2C GT911
+    i2c_bind = "/sys/bus/i2c/drivers/gt911_poll"
+    if os.path.exists(f"{i2c_bind}/10-005d"):
+        return (
+            'ENV{ID_INPUT_TOUCHSCREEN}=="1", ENV{ID_PATH}=="platform-fe205000.i2c"',
+            "10-005d",
+            i2c_bind,
+            "I2C GT911"
+        )
+
+    # USB HID (QinHeng 1a86:e5e3 or similar)
+    for hid_dev in sorted(glob.glob("/sys/bus/hid/devices/*:1A86:E5E3.*")):
+        try:
+            drv_link = os.readlink(f"{hid_dev}/driver")
+            bind_path = os.path.dirname(drv_link)
+            dev_name = os.path.basename(hid_dev)
+
+            # Find ID_PATH via udevadm on the associated input device
+            r = subprocess.run(
+                "sudo udevadm info --query=property --name=/dev/input/event5 2>/dev/null | grep '^ID_PATH='",
+                shell=True, capture_output=True, text=True)
+            id_path = r.stdout.strip().split("=", 1)[1] if r.stdout else None
+            if not id_path:
+                r = subprocess.run(
+                    "for f in /dev/input/by-path/*usb*event*; do "
+                    "sudo udevadm info --query=property --name=\"$f\" 2>/dev/null; done | grep '^ID_PATH=' | head -1",
+                    shell=True, capture_output=True, text=True)
+                id_path = r.stdout.strip().split("=", 1)[1] if r.stdout else None
+
+            if id_path:
+                match = f'ENV{{ID_INPUT_TOUCHSCREEN}}=="1", ENV{{ID_PATH}}=="{id_path}"'
+                return match, dev_name, bind_path, "USB HID"
+        except Exception:
+            continue
+
+    # Fallback: match any touchscreen by name substring
+    for hid_dev in sorted(glob.glob("/sys/bus/hid/devices/*")):
+        try:
+            with open(f"{hid_dev}/uevent") as f:
+                uevent = f.read()
+            if "HID_NAME" not in uevent:
+                continue
+            drv_link = os.readlink(f"{hid_dev}/driver")
+            if "hid-multitouch" not in drv_link and "hid-generic" not in drv_link:
+                continue
+            bind_path = os.path.dirname(drv_link)
+            dev_name = os.path.basename(hid_dev)
+            # Use name-based match instead of ID_PATH
+            name = uevent.split("HID_NAME=")[1].split("\n")[0]
+            match = f'ENV{{ID_INPUT_TOUCHSCREEN}}=="1", ATTRS{{name}}=="{name}"'
+            return match, dev_name, bind_path, "USB HID (fallback)"
+        except Exception:
+            continue
+
+    # Search /proc/bus/input/devices for any touchscreen
+    try:
+        with open("/proc/bus/input/devices") as f:
+            data = f.read()
+        for block in data.split("\n\n"):
+            if "Touchscreen" not in block and "TOUCHSCREEN" not in block:
+                continue
+            for line in block.split("\n"):
+                if line.startswith("N: Name="):
+                    name = line.split('"')[1]
+                    match = f'ENV{{ID_INPUT_TOUCHSCREEN}}=="1"'
+                    return match, "auto", None, f"auto-detect ({name})"
+    except Exception:
+        pass
+
+    return None, None, None, None
 
 
 def mat_mul(a, b):
@@ -65,7 +137,6 @@ def save_state(st):
 
 
 def combined(base, rot):
-    # rotate applied AFTER base:  rot x base
     return mat_mul(ROTATE[rot], BASE[base][0])
 
 
@@ -74,25 +145,38 @@ def run(cmd):
 
 
 def apply_matrix(m):
-    rule = f'{UDEV_MATCH}, ENV{{LIBINPUT_CALIBRATION_MATRIX}}="{m}"\n'
+    udev_match, dev_id, bind_path, driver = detect_device()
+    if not udev_match:
+        print("ERROR: no touchscreen detected!")
+        return
+
+    rule = f'{udev_match}, ENV{{LIBINPUT_CALIBRATION_MATRIX}}="{m}"\n'
     with open("/tmp/gt911-calib.rules", "w") as f:
         f.write(rule)
     run("sudo cp /tmp/gt911-calib.rules " + UDEV_RULE)
     run("sudo udevadm control --reload-rules")
-    run(f"echo -n 10-005d | sudo tee {GT911_BIND}/unbind 2>/dev/null")
-    run("sleep 0.3")
-    run(f"echo -n 10-005d | sudo tee {GT911_BIND}/bind 2>/dev/null")
+
+    # Rebind driver to re-apply udev properties
+    if bind_path and dev_id:
+        run(f"echo -n {dev_id} | sudo tee {bind_path}/unbind 2>/dev/null")
+        run("sleep 0.3")
+        run(f"echo -n {dev_id} | sudo tee {bind_path}/bind 2>/dev/null")
+    else:
+        run("sudo udevadm trigger --subsystem-match=input 2>/dev/null")
+
     run("sleep 0.5")
     run("killall labwc 2>/dev/null; sleep 0.3")
     env = os.environ.copy()
     env.update({"DISPLAY": ":0", "XAUTHORITY": "/home/xc/.Xauthority"})
     subprocess.Popen(["labwc"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print(f"applied: {m}")
+    print(f"  device={driver}  matrix={m}")
 
 
 def main():
     if len(sys.argv) < 2:
         st = load_state()
+        udev_match, dev_id, bind_path, driver = detect_device()
+        print(f"  device={driver}")
         print(f"  base={st['base']}  rotate={st['rotate']}  ->  {combined(st['base'], st['rotate'])}")
         print()
         print("Commands:")
@@ -107,6 +191,8 @@ def main():
     st = load_state()
 
     if cmd == "show":
+        udev_match, dev_id, bind_path, driver = detect_device()
+        print(f"  device={driver}")
         print(f"  base={st['base']}  rotate={st['rotate']}  ->  {combined(st['base'], st['rotate'])}")
         return
 
