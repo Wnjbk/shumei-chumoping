@@ -29,21 +29,29 @@ fi
 echo "[2/8] Setting up config.txt..."
 cp $BOOT_DIR/config.txt $BOOT_DIR/config.txt.bak.$(date +%Y%m%d_%H%M%S)
 
-if ! grep -q "dtoverlay=boe-bv050fwm" $BOOT_DIR/config.txt 2>/dev/null; then
-    cat >> $BOOT_DIR/config.txt << 'CFGEOF'
+sed -i \
+    -e '/^# === BOE BV050FWM Display + Touch ===$/d' \
+    -e '/^camera_auto_detect=/d' \
+    -e '/^display_auto_detect=/d' \
+    -e '/^dtoverlay=vc4-kms-v3d/d' \
+    -e '/^max_framebuffers=/d' \
+    -e '/^dtparam=i2c_vc=on$/d' \
+    -e '/^dtoverlay=boe-bv050fwm$/d' \
+    -e '/^dtoverlay=dummy-csi-sensor,2lanes$/d' \
+    $BOOT_DIR/config.txt
+
+cat >> $BOOT_DIR/config.txt << 'CFGEOF'
 
 # === BOE BV050FWM Display + Touch ===
-dtparam=i2c_arm=on
+camera_auto_detect=1
+display_auto_detect=0
+dtoverlay=vc4-kms-v3d,cma-256
+max_framebuffers=2
 dtparam=i2c_vc=on
 dtoverlay=boe-bv050fwm
-dtoverlay=vc4-kms-v3d,cma-256
-display_auto_detect=0
 dtoverlay=dummy-csi-sensor,2lanes
 CFGEOF
-    echo "  config.txt updated"
-else
-    echo "  config.txt already configured"
-fi
+echo "  config.txt updated"
 
 # ---- 3. DT overlay ----
 echo "[3/8] Installing DT overlay..."
