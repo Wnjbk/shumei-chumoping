@@ -56,7 +56,7 @@ done
 [[ "$(id -u)" == 0 ]] || die "run as root"
 [[ -n "$SOURCE" && -n "$OUTPUT" ]] || { usage >&2; exit 2; }
 
-for cmd in lsblk dd curl sha256sum e2fsck resize2fs losetup udevadm blockdev numfmt; do
+for cmd in lsblk dd curl e2fsck resize2fs losetup udevadm blockdev numfmt; do
     need "$cmd"
 done
 
@@ -100,25 +100,21 @@ echo "[1/4] Copying the complete card with dd..."
 dd if="$SOURCE" of="$RAW" bs=16M iflag=fullblock status=progress conv=fsync
 sync
 
-echo "[2/4] Verifying the raw image hash..."
-sha256sum "$RAW" | tee "$RAW.sha256"
-
-echo "[3/4] Downloading PiShrink..."
+echo "[2/3] Downloading PiShrink..."
 curl --fail --location --retry 3 --output "$PISHRINK" "$PISHRINK_URL"
 chmod 0755 "$PISHRINK"
 bash -n "$PISHRINK"
 
-echo "[4/4] Shrinking the copy and enabling first-boot expansion..."
+echo "[3/3] Shrinking the copy and enabling first-boot expansion..."
 # PiShrink keeps the image bootable, moves the final partition boundary,
 # and installs its resize-on-first-boot service by default.
 "$PISHRINK" "$RAW" "$OUTPUT"
 
 echo "Final image: $OUTPUT"
-sha256sum "$OUTPUT" | tee "$OUTPUT.sha256"
 lsblk -f "$OUTPUT" 2>/dev/null || true
 
 if [[ "$KEEP_RAW" == 0 ]]; then
-    rm -f -- "$RAW" "$RAW.sha256"
+    rm -f -- "$RAW"
     echo "Raw intermediate removed: $RAW"
 else
     echo "Raw intermediate kept: $RAW"
