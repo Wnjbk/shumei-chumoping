@@ -8,6 +8,7 @@ PISHRINK_URL="https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink
 WORK_DIR=""
 SOURCE=""
 OUTPUT=""
+PISHRINK_SOURCE=""
 KEEP_RAW=1
 
 usage() {
@@ -19,6 +20,7 @@ Options:
   --source DEV       Whole SD device, for example /dev/sdb, never /dev/sdb2
   --output FILE      Final shrunk image
   --workdir DIR      Directory for the raw intermediate image
+  --pishrink FILE    Use a locally saved PiShrink script
   --delete-raw       Delete the raw intermediate after a successful shrink
   -h, --help         Show this help
 EOF
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         --source) SOURCE="${2:-}"; shift 2 ;;
         --output) OUTPUT="${2:-}"; shift 2 ;;
         --workdir) WORK_DIR="${2:-}"; shift 2 ;;
+        --pishrink) PISHRINK_SOURCE="${2:-}"; shift 2 ;;
         --delete-raw) KEEP_RAW=0; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "unknown option: $1" ;;
@@ -56,9 +59,12 @@ done
 [[ "$(id -u)" == 0 ]] || die "run as root"
 [[ -n "$SOURCE" && -n "$OUTPUT" ]] || { usage >&2; exit 2; }
 
-for cmd in lsblk dd curl e2fsck resize2fs losetup udevadm blockdev numfmt; do
+for cmd in lsblk dd e2fsck resize2fs losetup udevadm blockdev numfmt; do
     need "$cmd"
 done
+if [[ -z "$PISHRINK_SOURCE" ]]; then
+    need curl
+fi
 
 SOURCE="$(readlink -f "$SOURCE")"
 OUTPUT="$(readlink -m "$OUTPUT")"
@@ -101,7 +107,17 @@ dd if="$SOURCE" of="$RAW" bs=16M iflag=fullblock status=progress conv=fsync
 sync
 
 echo "[2/3] Downloading PiShrink..."
-curl --fail --location --retry 3 --output "$PISHRINK" "$PISHRINK_URL"
+if [[ -n "$PISHRINK_SOURCE" ]]; then
+    PISHRINK_SOURCE="$(readlink -f "$PISHRINK_SOURCE")"
+    [[ -f "$PISHRINK_SOURCE" ]] || die "PiShrink file not found: $PISHRINK_SOURCE"
+    if [[ "$PISHRINK_SOURCE" != "$PISHRINK" ]]; then
+        cp -- "$PISHRINK_SOURCE" "$PISHRINK"
+    fi
+    echo "Using local PiShrink: $PISHRINK_SOURCE"
+else
+    echo "Downloading PiShrink..."
+    curl --fail --location --retry 3 --output "$PISHRINK" "$PISHRINK_URL"
+fi
 chmod 0755 "$PISHRINK"
 bash -n "$PISHRINK"
 
