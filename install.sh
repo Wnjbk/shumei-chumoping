@@ -144,16 +144,35 @@ echo "panel-ili9881c" > /etc/modules-load.d/panel-boe.conf
 depmod -a
 echo "  Done"
 
-# ---- 8. touch_calib ----
-echo "[8/8] Installing touch_calib..."
+# ---- 8. Default display rotation (Raspberry Pi OS / labwc) ----
+echo "[8/9] Setting default DSI rotation..."
+KANSHI_DIR=/home/xc/.config/kanshi
+KANSHI_CONFIG=$KANSHI_DIR/config
+mkdir -p "$KANSHI_DIR"
+if [ -f "$KANSHI_CONFIG" ]; then
+    cp "$KANSHI_CONFIG" "$KANSHI_CONFIG.bak.$(date +%Y%m%d_%H%M%S)"
+fi
+cat > "$KANSHI_CONFIG" << 'KANSHIEOF'
+profile {
+    output DSI-1 enable scale 1.000000 mode 720x1280@60.038 position 0,0 transform 270
+}
+KANSHIEOF
+chown -R xc:xc /home/xc/.config
+echo "  DSI-1 set to right rotation (transform 270)"
+
+# ---- 9. touch_calib ----
+echo "[9/9] Installing touch_calib..."
 if [ -f "$REPO_DIR/touch_calib.py" ]; then
     mkdir -p /home/xc/.config
     mkdir -p /home/xc/shumei-chumoping
-    cp "$REPO_DIR/touch_calib.py" /home/xc/shumei-chumoping/touch_calib.py
+    if [ "$REPO_DIR/touch_calib.py" != "/home/xc/shumei-chumoping/touch_calib.py" ]; then
+        cp "$REPO_DIR/touch_calib.py" /home/xc/shumei-chumoping/touch_calib.py
+    fi
     chmod +x /home/xc/shumei-chumoping/touch_calib.py
     ln -sf /home/xc/shumei-chumoping/touch_calib.py /usr/local/bin/touch_calib
     /home/xc/shumei-chumoping/touch_calib.py reset 2>/dev/null || true
     /home/xc/shumei-chumoping/touch_calib.py save 2>/dev/null || true
+    chown -R xc:xc /home/xc/.config /home/xc/shumei-chumoping
     echo "  touch_calib ready"
 fi
 
