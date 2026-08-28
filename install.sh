@@ -7,26 +7,48 @@ set -e
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 KERNEL_VER=$(uname -r)
-BOOT_DIR=/boot/firmware
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: run this installer as root, for example: sudo bash install.sh"
+    exit 1
+fi
+
+if [ -d /boot/firmware ]; then
+    BOOT_DIR=/boot/firmware
+else
+    BOOT_DIR=/boot
+fi
+
 OVERLAY_DIR=$BOOT_DIR/overlays
 MODULES_DIR=/lib/modules/$KERNEL_VER
 
 echo "============================================"
 echo " BOE BV050FWM + GT911 Touch Installer"
 echo " Kernel: $KERNEL_VER"
+echo " Boot dir: $BOOT_DIR"
 echo "============================================"
 
-# ---- 1. Kernel headers ----
+# ---- 1. Build dependencies + kernel headers ----
 if [ ! -f /lib/modules/$KERNEL_VER/build/Makefile ]; then
-    echo "[1/8] Installing kernel headers..."
+    echo "[1/8] Installing build dependencies and kernel headers..."
     apt update
-    apt install -y linux-headers-$KERNEL_VER
+    apt install -y build-essential device-tree-compiler bc bison flex libssl-dev
+    apt install -y linux-headers-$KERNEL_VER || apt install -y raspberrypi-kernel-headers
 else
-    echo "[1/8] Kernel headers OK"
+    echo "[1/8] Installing build dependencies..."
+    apt update
+    apt install -y build-essential device-tree-compiler bc bison flex libssl-dev
+fi
+
+if [ ! -f /lib/modules/$KERNEL_VER/build/Makefile ]; then
+    echo "ERROR: Kernel headers still missing at /lib/modules/$KERNEL_VER/build"
+    echo "       Install the matching headers for kernel $KERNEL_VER, then rerun this script."
+    exit 1
 fi
 
 # ---- 2. config.txt ----
 echo "[2/8] Setting up config.txt..."
+mkdir -p $OVERLAY_DIR
 cp $BOOT_DIR/config.txt $BOOT_DIR/config.txt.bak.$(date +%Y%m%d_%H%M%S)
 
 sed -i \
