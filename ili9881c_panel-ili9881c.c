@@ -14,6 +14,14 @@
 #include <drm/drm_modes.h>
 #include <drm/drm_panel.h>
 
+/* Removed from newer kernels; keep the panel command table portable. */
+#ifndef mipi_dsi_dcs_write_seq
+#define mipi_dsi_dcs_write_seq(_dsi, ...) do { \
+    static const u8 _seq[] = { __VA_ARGS__ }; \
+    mipi_dsi_dcs_write_buffer((_dsi), _seq, sizeof(_seq)); \
+} while (0)
+#endif
+
 struct bv050fwm {
     struct drm_panel panel;
     struct mipi_dsi_device *dsi;

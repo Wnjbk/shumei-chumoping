@@ -120,7 +120,12 @@ done
 
 if [ -f $PANEL_SRC/Makefile ] && [ -f $PANEL_SRC/panel-ili9881c.c ]; then
     cd $PANEL_SRC
-    make -C /lib/modules/$KERNEL_VER/build M=$PANEL_SRC modules 2>&1 | tail -5
+    if ! make -C /lib/modules/$KERNEL_VER/build M=$PANEL_SRC modules >$PANEL_SRC/build.log 2>&1; then
+        echo "ERROR: panel driver build failed"
+        tail -80 $PANEL_SRC/build.log
+        exit 1
+    fi
+    tail -5 $PANEL_SRC/build.log
     cp panel-ili9881c.ko $MODULES_DIR/kernel/drivers/gpu/drm/panel/
     echo "  Panel driver installed"
 else
@@ -145,7 +150,12 @@ if [ -f "$REPO_DIR/gt911_poll.c" ]; then
     cp "$REPO_DIR/Makefile" /tmp/gt911_build_Makefile 2>/dev/null || true
     cd "$REPO_DIR"
     make clean 2>/dev/null || true
-    make 2>&1 | tail -3
+    if ! make >$REPO_DIR/gt911-build.log 2>&1; then
+        echo "ERROR: GT911 driver build failed"
+        tail -80 $REPO_DIR/gt911-build.log
+        exit 1
+    fi
+    tail -3 $REPO_DIR/gt911-build.log
     cp gt911_poll.ko $MODULES_DIR/kernel/drivers/input/touchscreen/
     echo "  GT911 driver installed"
 else
