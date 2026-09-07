@@ -1,7 +1,6 @@
 #!/bin/bash
 # BOE BV050FWM + GT911 touchscreen installer for fresh Raspberry Pi OS
-# Usage: curl -sSL https://raw.githubusercontent.com/Wnjbk/shumei-chumoping/master/install.sh | sudo bash
-# Or:    git clone https://github.com/Wnjbk/shumei-chumoping && cd shumei-chumoping && sudo bash install.sh
+# Usage: git clone https://github.com/Wnjbk/shumei-chumoping && cd shumei-chumoping && sudo bash install.sh
 
 set -e
 
@@ -17,6 +16,15 @@ TARGET_USER="${SUDO_USER:-xc}"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
     echo "ERROR: cannot find home directory for user $TARGET_USER"
+    exit 1
+fi
+
+KERNEL_ARCH="$(uname -m)"
+USERLAND_ARCH="$(dpkg --print-architecture)"
+if [ "$KERNEL_ARCH" = "aarch64" ] && [ "$USERLAND_ARCH" != "arm64" ]; then
+    echo "ERROR: 64-bit kernel ($KERNEL_ARCH) with $USERLAND_ARCH userland."
+    echo "       This installer builds 64-bit kernel modules and requires 64-bit Raspberry Pi OS."
+    echo "       Reinstall Raspberry Pi OS (64-bit), then run this installer again."
     exit 1
 fi
 
