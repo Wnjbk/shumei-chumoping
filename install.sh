@@ -35,16 +35,16 @@ echo " Kernel: $KERNEL_VER"
 echo " Boot dir: $BOOT_DIR"
 echo "============================================"
 
-# ---- 1. Build dependencies + kernel headers ----
+# ---- 1. External-module build dependencies + kernel headers ----
 if [ ! -f /lib/modules/$KERNEL_VER/build/Makefile ]; then
     echo "[1/8] Installing build dependencies and kernel headers..."
     apt update
-    apt install -y build-essential device-tree-compiler bc bison flex libssl-dev
+    apt install -y build-essential device-tree-compiler
     apt install -y linux-headers-$KERNEL_VER || apt install -y raspberrypi-kernel-headers
 else
     echo "[1/8] Installing build dependencies..."
     apt update
-    apt install -y build-essential device-tree-compiler bc bison flex libssl-dev
+    apt install -y build-essential device-tree-compiler
 fi
 
 if [ ! -f /lib/modules/$KERNEL_VER/build/Makefile ]; then
