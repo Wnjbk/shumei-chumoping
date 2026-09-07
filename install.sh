@@ -13,6 +13,13 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+TARGET_USER="${SUDO_USER:-xc}"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
+    echo "ERROR: cannot find home directory for user $TARGET_USER"
+    exit 1
+fi
+
 if [ -d /boot/firmware ]; then
     BOOT_DIR=/boot/firmware
 else
@@ -146,7 +153,7 @@ echo "  Done"
 
 # ---- 8. Default display rotation (Raspberry Pi OS / labwc) ----
 echo "[8/9] Setting default DSI rotation..."
-KANSHI_DIR=/home/xc/.config/kanshi
+KANSHI_DIR="$TARGET_HOME/.config/kanshi"
 KANSHI_CONFIG=$KANSHI_DIR/config
 mkdir -p "$KANSHI_DIR"
 if [ -f "$KANSHI_CONFIG" ]; then
@@ -157,22 +164,22 @@ profile {
     output DSI-1 enable scale 1.000000 mode 720x1280@60.038 position 0,0 transform 270
 }
 KANSHIEOF
-chown -R xc:xc /home/xc/.config
+chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
 echo "  DSI-1 set to right rotation (transform 270)"
 
 # ---- 9. touch_calib ----
 echo "[9/9] Installing touch_calib..."
 if [ -f "$REPO_DIR/touch_calib.py" ]; then
-    mkdir -p /home/xc/.config
-    mkdir -p /home/xc/shumei-chumoping
-    if [ "$REPO_DIR/touch_calib.py" != "/home/xc/shumei-chumoping/touch_calib.py" ]; then
-        cp "$REPO_DIR/touch_calib.py" /home/xc/shumei-chumoping/touch_calib.py
+    mkdir -p "$TARGET_HOME/.config"
+    mkdir -p "$TARGET_HOME/shumei-chumoping"
+    if [ "$REPO_DIR/touch_calib.py" != "$TARGET_HOME/shumei-chumoping/touch_calib.py" ]; then
+        cp "$REPO_DIR/touch_calib.py" "$TARGET_HOME/shumei-chumoping/touch_calib.py"
     fi
-    chmod +x /home/xc/shumei-chumoping/touch_calib.py
-    ln -sf /home/xc/shumei-chumoping/touch_calib.py /usr/local/bin/touch_calib
-    /home/xc/shumei-chumoping/touch_calib.py reset 2>/dev/null || true
-    /home/xc/shumei-chumoping/touch_calib.py save 2>/dev/null || true
-    chown -R xc:xc /home/xc/.config /home/xc/shumei-chumoping
+    chmod +x "$TARGET_HOME/shumei-chumoping/touch_calib.py"
+    ln -sf "$TARGET_HOME/shumei-chumoping/touch_calib.py" /usr/local/bin/touch_calib
+    "$TARGET_HOME/shumei-chumoping/touch_calib.py" reset 2>/dev/null || true
+    "$TARGET_HOME/shumei-chumoping/touch_calib.py" save 2>/dev/null || true
+    chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config" "$TARGET_HOME/shumei-chumoping"
     echo "  touch_calib ready"
 fi
 

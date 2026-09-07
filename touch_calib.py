@@ -11,7 +11,7 @@ Supports I2C (gt911_poll) and USB HID (QinHeng adapter).
 The base fix operates on raw touch coordinates before rotation.
 """
 
-import subprocess, sys, os, glob
+import getpass, os, glob, pwd, subprocess, sys
 
 BASE = {
     "normal": ("1 0 0 0 1 0",   ""),
@@ -26,7 +26,9 @@ ROTATE = {
     "270": "0 -1 1 1 0 0",
 }
 
-STATE_FILE = "/home/xc/.config/touch_calib.state"
+TARGET_USER = os.environ.get("SUDO_USER") or getpass.getuser()
+TARGET_HOME = pwd.getpwnam(TARGET_USER).pw_dir
+STATE_FILE = os.path.join(TARGET_HOME, ".config", "touch_calib.state")
 UDEV_RULE  = "/etc/udev/rules.d/98-gt911-calibration.rules"
 
 
@@ -167,7 +169,7 @@ def apply_matrix(m):
     run("sleep 0.5")
     run("killall labwc 2>/dev/null; sleep 0.3")
     env = os.environ.copy()
-    env.update({"DISPLAY": ":0", "XAUTHORITY": "/home/xc/.Xauthority"})
+    env.update({"DISPLAY": ":0", "XAUTHORITY": os.path.join(TARGET_HOME, ".Xauthority")})
     subprocess.Popen(["labwc"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"  device={driver}  matrix={m}")
 
