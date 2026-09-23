@@ -156,13 +156,17 @@ echo '[4/5] Boot overlay configured; firmware/Flash left untouched'
 # The calibration tool never needs to unbind the shared display/touch IC.
 install -Dm0755 "$REPO_DIR/touch_calib.py" "$CALIB_DEST"
 ln -sfn "$CALIB_DEST" /usr/local/bin/touch_calib
-if [[ ! -e "$STATE_FILE" ]]; then
-    mkdir -p "$(dirname "$STATE_FILE")"
+for config_dir in "$TARGET_HOME/.config" "$TARGET_HOME/.config/kanshi" "$TARGET_HOME/.config/labwc"; do
+    if [[ ! -d "$config_dir" ]]; then
+        mkdir -p "$config_dir"
+        chown "$TARGET_USER:" "$config_dir"
+    fi
+done
+if [[ ! -s "$STATE_FILE" ]]; then
     printf 'base=normal\nrotate=0\n' > "$STATE_FILE"
     chown "$TARGET_USER:" "$STATE_FILE"
 fi
-if [[ ! -e "$KANSHI_CONFIG" ]]; then
-    mkdir -p "$(dirname "$KANSHI_CONFIG")"
+if [[ ! -s "$KANSHI_CONFIG" ]]; then
     printf 'profile {\n    output DSI-1 enable scale 1.000000 mode 720x1280 position 0,0 transform 270\n}\n' > "$KANSHI_CONFIG"
     chown "$TARGET_USER:" "$KANSHI_CONFIG"
 fi
