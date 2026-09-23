@@ -1,0 +1,15 @@
+# External kernel build products and runtime backups
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.dtbo
+*.log
+modules.order
+Module.symvers
+.tmp_versions/
+build/
+backups/
+__pycache__/
+*.pyc

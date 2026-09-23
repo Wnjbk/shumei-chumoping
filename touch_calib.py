@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""GT911 touchscreen calibration — base fix + rotation, no reboot.
-Supports I2C (gt911_poll) and USB HID (QinHeng adapter).
+"""Touchscreen calibration — base fix + rotation, no reboot.
+Supports ILI79505A TDDI, GT911 and USB HID (QinHeng adapter).
 
   touch_calib set  base <flip-x|flip-y|normal>    Hardware fix (rarely changed)
   touch_calib set  rotate <0|90|180|270>          Match display rotation
   touch_calib reset                                Restore working default
   touch_calib show                                 Show current state
-  touch_calib save                                 Persist to udev
+  touch_calib save                                 Reapply saved settings
 
 The base fix operates on raw touch coordinates before rotation.
 """
 
 import getpass, os, glob, pwd, subprocess, sys
+import shutil
+import xml.etree.ElementTree as ET
 
 BASE = {
     "normal": ("1 0 0 0 1 0",   ""),
@@ -30,10 +32,30 @@ TARGET_USER = os.environ.get("SUDO_USER") or getpass.getuser()
 TARGET_HOME = pwd.getpwnam(TARGET_USER).pw_dir
 STATE_FILE = os.path.join(TARGET_HOME, ".config", "touch_calib.state")
 UDEV_RULE  = "/etc/udev/rules.d/98-gt911-calibration.rules"
+LABWC_RC = os.path.join(TARGET_HOME, ".config", "labwc", "rc.xml")
+LABWC_NS = "http://openbox.org/3.4/rc"
+ILITEK_NAME = "ILITEK_TDDI"
+
+
+def ilitek_event():
+    """Identify the actual 0x41 I2C input device, not an unrelated USB HID."""
+    for path in sorted(glob.glob("/sys/class/input/event*/device/name")):
+        try:
+            with open(path, encoding="utf-8") as name_file:
+                if name_file.read().strip() != ILITEK_NAME:
+                    continue
+            if "10-0041" in os.path.realpath(path).split(os.sep):
+                return os.path.basename(os.path.dirname(os.path.dirname(path)))
+        except OSError:
+            continue
+    return None
 
 
 def detect_device():
     """Auto-detect touchscreen: returns (udev_match, dev_id, bind_path)."""
+    event = ilitek_event()
+    if event:
+        return None, event, None, "I2C ILI79505A (ILITEK_TDDI)"
     # I2C GT911
     i2c_bind = "/sys/bus/i2c/drivers/gt911_poll"
     if os.path.exists(f"{i2c_bind}/10-005d"):
@@ -132,10 +154,9 @@ def load_state():
 
 def save_state(st):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    with open("/tmp/touch_calib.state", "w") as f:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
         for k, v in st.items():
             f.write(f"{k}={v}\n")
-    subprocess.run(["cp", "/tmp/touch_calib.state", STATE_FILE])
 
 
 def combined(base, rot):
@@ -146,11 +167,109 @@ def run(cmd):
     subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
 
+def ilitek_matrix():
+    """Show the live profile, or the device's existing udev default."""
+    if os.path.isfile(LABWC_RC):
+        try:
+            root = ET.parse(LABWC_RC).getroot()
+            for device in root.findall(".//device") + root.findall(
+                    f".//{{{LABWC_NS}}}device"):
+                if device.get("category") != ILITEK_NAME:
+                    continue
+                matrix = device.find("calibrationMatrix")
+                if matrix is None:
+                    matrix = device.find(f"{{{LABWC_NS}}}calibrationMatrix")
+                if matrix is not None and matrix.text:
+                    return matrix.text.strip(), "labwc"
+        except ET.ParseError:
+            pass
+    event = ilitek_event()
+    if event:
+        result = subprocess.run(
+            ["udevadm", "info", "--query=property", f"--name=/dev/input/{event}"],
+            capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            if line.startswith("LIBINPUT_CALIBRATION_MATRIX="):
+                return line.split("=", 1)[1], "udev (existing default)"
+    return "unknown", "unknown"
+
+
+def reconfigure_labwc():
+    uid = pwd.getpwnam(TARGET_USER).pw_uid
+    for proc_dir in glob.glob("/proc/[0-9]*"):
+        try:
+            if os.stat(proc_dir).st_uid != uid:
+                continue
+            with open(os.path.join(proc_dir, "comm"), encoding="ascii") as proc:
+                if proc.read().strip() != "labwc":
+                    continue
+            env = os.environ.copy()
+            env["LABWC_PID"] = os.path.basename(proc_dir)
+            result = subprocess.run(["labwc", "--reconfigure"], env=env,
+                                    capture_output=True, text=True)
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or "labwc reload failed")
+            return
+        except (OSError, ProcessLookupError):
+            continue
+    raise RuntimeError("running labwc for this user was not found")
+
+
+def apply_ilitek_matrix(matrix):
+    """Configure labwc in place; NEVER unbind/reset the shared display IC."""
+    if not os.path.isfile(LABWC_RC):
+        raise RuntimeError(f"labwc config not found: {LABWC_RC}")
+    ET.register_namespace("", LABWC_NS)
+    tree = ET.parse(LABWC_RC)
+    root = tree.getroot()
+    if root.tag.startswith("{"):
+        qname = lambda name: f"{{{LABWC_NS}}}{name}"
+    else:
+        qname = lambda name: name
+
+    touch = next((node for node in root.findall(qname("touch"))
+                  if node.get("deviceName") == ILITEK_NAME), None)
+    if touch is None:
+        ET.SubElement(root, qname("touch"), {
+            "deviceName": ILITEK_NAME, "mapToOutput": "DSI-1",
+            "mouseEmulation": "yes"})
+
+    libinput = root.find(qname("libinput"))
+    if libinput is None:
+        libinput = ET.SubElement(root, qname("libinput"))
+    device = next((node for node in libinput.findall(qname("device"))
+                   if node.get("category") == ILITEK_NAME), None)
+    if device is None:
+        device = ET.SubElement(libinput, qname("device"),
+                               {"category": ILITEK_NAME})
+    calibration = device.find(qname("calibrationMatrix"))
+    if calibration is None:
+        calibration = ET.SubElement(device, qname("calibrationMatrix"))
+    calibration.text = matrix
+
+    backup = LABWC_RC + ".before-ili79505a-calib"
+    if not os.path.exists(backup):
+        shutil.copy2(LABWC_RC, backup)
+    staged = LABWC_RC + ".ili79505a-new"
+    try:
+        ET.indent(tree, space="  ")
+        tree.write(staged, encoding="utf-8", xml_declaration=True)
+        os.chmod(staged, os.stat(LABWC_RC).st_mode & 0o777)
+        os.replace(staged, LABWC_RC)
+        reconfigure_labwc()
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
+    print(f"  device={ILITEK_NAME}  matrix={matrix}  labwc reconfigured")
+
+
 def apply_matrix(m):
     udev_match, dev_id, bind_path, driver = detect_device()
-    if not udev_match:
-        print("ERROR: no touchscreen detected!")
+    if driver == "I2C ILI79505A (ILITEK_TDDI)":
+        apply_ilitek_matrix(m)
         return
+    if not udev_match:
+        raise RuntimeError("no touchscreen detected")
 
     rule = f'{udev_match}, ENV{{LIBINPUT_CALIBRATION_MATRIX}}="{m}"\n'
     with open("/tmp/gt911-calib.rules", "w") as f:
@@ -196,14 +315,19 @@ def main():
         udev_match, dev_id, bind_path, driver = detect_device()
         print(f"  device={driver}")
         print(f"  base={st['base']}  rotate={st['rotate']}  ->  {combined(st['base'], st['rotate'])}")
+        if driver == "I2C ILI79505A (ILITEK_TDDI)":
+            live, source = ilitek_matrix()
+            print(f"  active={live}  source={source}")
+            if live != combined(st["base"], st["rotate"]):
+                print("  note: saved state differs from active matrix; run set to apply")
         return
 
     if cmd == "reset":
         st = {"base": "flip-y", "rotate": "270"}
-        save_state(st)
         m = combined(st["base"], st["rotate"])
         print(f"  base={st['base']}  rotate={st['rotate']}  ->  {m}")
         apply_matrix(m)
+        save_state(st)
         return
 
     if cmd == "set":
@@ -219,10 +343,10 @@ def main():
         else:
             print(f"Invalid: {layer}={val}")
             return
-        save_state(st)
         m = combined(st["base"], st["rotate"])
         print(f"  base={st['base']}  rotate={st['rotate']}  ->  {m}")
         apply_matrix(m)
+        save_state(st)
         return
 
     if cmd == "save":

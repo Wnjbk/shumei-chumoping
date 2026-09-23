@@ -1,212 +1,204 @@
-#!/bin/bash
-# BOE BV050FWM + GT911 touchscreen installer for fresh Raspberry Pi OS
-# Usage: git clone https://github.com/Wnjbk/shumei-chumoping && cd shumei-chumoping && sudo bash install.sh
+#!/usr/bin/env bash
+# ILI79505A DSI display + ILITEK_TDDI I2C touch installer for Raspberry Pi OS.
+# From a persistent checkout: sudo bash install.sh [--user LOGIN]
+# Read-only prerequisites check: bash install.sh --check
+set -euo pipefail
 
-set -e
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$PWD/install.sh}")" && pwd)"
+KERNEL_VER="$(uname -r)"
+KERNEL_BUILD="/lib/modules/$KERNEL_VER/build"
+BOOT_DIR=/boot
+[[ -d /boot/firmware ]] && BOOT_DIR=/boot/firmware
+MODULES_DIR="/lib/modules/$KERNEL_VER"
+CHECK_ONLY=0
+TARGET_USER="${SUDO_USER:-}"
 
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-KERNEL_VER=$(uname -r)
-
-if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: run this installer as root, for example: sudo bash install.sh"
-    exit 1
-fi
-
-TARGET_USER="${SUDO_USER:-xc}"
-TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
-if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
-    echo "ERROR: cannot find home directory for user $TARGET_USER"
-    exit 1
-fi
-
-KERNEL_ARCH="$(uname -m)"
-USERLAND_ARCH="$(dpkg --print-architecture)"
-if [ "$KERNEL_ARCH" = "aarch64" ] && [ "$USERLAND_ARCH" != "arm64" ]; then
-    echo "ERROR: 64-bit kernel ($KERNEL_ARCH) with $USERLAND_ARCH userland."
-    echo "       This installer builds 64-bit kernel modules and requires 64-bit Raspberry Pi OS."
-    echo "       Reinstall Raspberry Pi OS (64-bit), then run this installer again."
-    exit 1
-fi
-
-if [ -d /boot/firmware ]; then
-    BOOT_DIR=/boot/firmware
-else
-    BOOT_DIR=/boot
-fi
-
-OVERLAY_DIR=$BOOT_DIR/overlays
-MODULES_DIR=/lib/modules/$KERNEL_VER
-
-echo "============================================"
-echo " BOE BV050FWM + GT911 Touch Installer"
-echo " Kernel: $KERNEL_VER"
-echo " Boot dir: $BOOT_DIR"
-echo "============================================"
-
-# ---- 1. External-module build dependencies + kernel headers ----
-if [ ! -f /lib/modules/$KERNEL_VER/build/Makefile ]; then
-    echo "[1/8] Installing build dependencies and kernel headers..."
-    apt update
-    apt install -y build-essential device-tree-compiler
-    apt install -y linux-headers-$KERNEL_VER || apt install -y raspberrypi-kernel-headers
-else
-    echo "[1/8] Installing build dependencies..."
-    apt update
-    apt install -y build-essential device-tree-compiler
-fi
-
-if [ ! -f /lib/modules/$KERNEL_VER/build/Makefile ]; then
-    echo "ERROR: Kernel headers still missing at /lib/modules/$KERNEL_VER/build"
-    echo "       Install the matching headers for kernel $KERNEL_VER, then rerun this script."
-    exit 1
-fi
-
-# ---- 2. config.txt ----
-echo "[2/8] Setting up config.txt..."
-mkdir -p $OVERLAY_DIR
-cp $BOOT_DIR/config.txt $BOOT_DIR/config.txt.bak.$(date +%Y%m%d_%H%M%S)
-
-sed -i \
-    -e '/^# === BOE BV050FWM Display + Touch ===$/d' \
-    -e '/^camera_auto_detect=/d' \
-    -e '/^display_auto_detect=/d' \
-    -e '/^dtoverlay=vc4-kms-v3d/d' \
-    -e '/^max_framebuffers=/d' \
-    -e '/^dtparam=i2c_vc=on$/d' \
-    -e '/^dtoverlay=boe-bv050fwm$/d' \
-    -e '/^dtoverlay=dummy-csi-sensor,2lanes$/d' \
-    $BOOT_DIR/config.txt
-
-cat >> $BOOT_DIR/config.txt << 'CFGEOF'
-
-# === BOE BV050FWM Display + Touch ===
-camera_auto_detect=1
-display_auto_detect=0
-dtoverlay=vc4-kms-v3d,cma-256
-max_framebuffers=2
-dtparam=i2c_vc=on
-dtoverlay=boe-bv050fwm
-dtoverlay=dummy-csi-sensor,2lanes
-CFGEOF
-echo "  config.txt updated"
-
-# ---- 3. DT overlay ----
-echo "[3/8] Installing DT overlay..."
-if [ -f "$REPO_DIR/boe-bv050fwm-overlay.dts" ]; then
-    dtc -@ -I dts -O dtb -o /tmp/boe-bv050fwm.dtbo "$REPO_DIR/boe-bv050fwm-overlay.dts"
-    cp /tmp/boe-bv050fwm.dtbo $OVERLAY_DIR/boe-bv050fwm.dtbo
-    echo "  DT overlay installed"
-else
-    echo "  WARN: boe-bv050fwm-overlay.dts not found"
-fi
-
-# ---- 4. Panel driver ----
-echo "[4/8] Building panel driver..."
-PANEL_SRC=/tmp/panel-build-$$
-rm -rf $PANEL_SRC
-mkdir -p $PANEL_SRC
-
-# Copy sources (try both naming conventions)
-for prefix in "" "ili9881c_"; do
-    for name in panel-ili9881c.c panel-ilitek-ili9881c.c; do
-        if [ -f "$REPO_DIR/${prefix}${name}" ]; then
-            cp "$REPO_DIR/${prefix}${name}" "$PANEL_SRC/$name"
-        fi
-    done
-    if [ -f "$REPO_DIR/${prefix}Makefile" ]; then
-        cp "$REPO_DIR/${prefix}Makefile" "$PANEL_SRC/Makefile"
-    fi
+while (($#)); do
+    case "$1" in
+        --check) CHECK_ONLY=1 ;;
+        --user)
+            [[ $# -ge 2 ]] || { echo 'ERROR: --user requires a login name' >&2; exit 2; }
+            TARGET_USER="$2"; shift ;;
+        -h|--help)
+            echo 'Usage: sudo bash install.sh [--user LOGIN] | bash install.sh --check [--user LOGIN]'
+            exit 0 ;;
+        *) echo "ERROR: unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
 done
 
-if [ -f $PANEL_SRC/Makefile ] && [ -f $PANEL_SRC/panel-ili9881c.c ]; then
-    cd $PANEL_SRC
-    if ! make -C /lib/modules/$KERNEL_VER/build M=$PANEL_SRC modules >$PANEL_SRC/build.log 2>&1; then
-        echo "ERROR: panel driver build failed"
-        tail -80 $PANEL_SRC/build.log
-        exit 1
+for source in "$REPO_DIR/Makefile" "$REPO_DIR/panel-ili79505a.c" \
+              "$REPO_DIR/ili79505a_test_cmds.h" "$REPO_DIR/ili79505a-overlay.dts" \
+              "$REPO_DIR/ilitek_v3/Makefile" "$REPO_DIR/ilitek_v3/ilitek_v3.c" \
+              "$REPO_DIR/touch_calib.py" "$REPO_DIR/ilitek-v3-polling.conf"; do
+    [[ -f "$source" ]] || { echo "ERROR: missing source: $source" >&2; exit 1; }
+done
+[[ -f "$BOOT_DIR/config.txt" ]] || { echo "ERROR: missing $BOOT_DIR/config.txt" >&2; exit 1; }
+[[ -d "$MODULES_DIR" ]] || { echo "ERROR: missing $MODULES_DIR" >&2; exit 1; }
+
+if [[ $(uname -m) == aarch64 ]] && command -v dpkg >/dev/null && \
+   [[ $(dpkg --print-architecture) != arm64 ]]; then
+    echo 'ERROR: 64-bit kernel needs a 64-bit Raspberry Pi OS userland' >&2
+    exit 1
+fi
+
+if [[ -z "$TARGET_USER" || "$TARGET_USER" == root ]] && [[ $CHECK_ONLY == 0 ]]; then
+    echo 'ERROR: run via sudo from the desktop user, or pass --user LOGIN' >&2
+    exit 1
+fi
+TARGET_HOME=''
+if [[ -n "$TARGET_USER" ]]; then
+    TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+    [[ -n "$TARGET_HOME" && -d "$TARGET_HOME" ]] || {
+        echo "ERROR: home directory not found for $TARGET_USER" >&2; exit 1;
+    }
+fi
+
+echo "ILI79505A: kernel=$KERNEL_VER, boot=$BOOT_DIR, source=$REPO_DIR"
+if [[ $CHECK_ONLY == 1 ]]; then
+    for tool in make gcc dtc python3; do
+        command -v "$tool" >/dev/null && echo "OK: $tool" || echo "MISSING: $tool"
+    done
+    [[ -f "$KERNEL_BUILD/Makefile" ]] && echo 'OK: matching kernel headers' || echo 'MISSING: matching kernel headers'
+    echo "Target user: ${TARGET_USER:-unspecified (pass --user LOGIN to install)}"
+    echo 'Check only: no build, installation, firmware write, or reboot performed.'
+    exit 0
+fi
+[[ $EUID -eq 0 ]] || { echo 'ERROR: run as root with sudo' >&2; exit 1; }
+
+# Only install dependencies if absent; do not upgrade a working kernel.
+packages=()
+command -v make >/dev/null && command -v gcc >/dev/null || packages+=(build-essential)
+command -v dtc >/dev/null || packages+=(device-tree-compiler)
+command -v python3 >/dev/null || packages+=(python3)
+if [[ ! -f "$KERNEL_BUILD/Makefile" ]]; then
+    packages+=("linux-headers-$KERNEL_VER")
+fi
+if ((${#packages[@]})); then
+    apt-get update
+    apt-get install -y "${packages[@]}" || {
+        [[ -f "$KERNEL_BUILD/Makefile" ]] || apt-get install -y raspberrypi-kernel-headers
+    }
+fi
+[[ -f "$KERNEL_BUILD/Makefile" ]] || { echo 'ERROR: matching kernel headers unavailable' >&2; exit 1; }
+for tool in make gcc dtc python3; do
+    command -v "$tool" >/dev/null || { echo "ERROR: $tool unavailable after dependency install" >&2; exit 1; }
+done
+
+echo '[1/5] Build both drivers in the persistent source directory'
+make -C "$KERNEL_BUILD" M="$REPO_DIR/ilitek_v3" modules
+[[ -s "$REPO_DIR/ilitek_v3/Module.symvers" ]] || { echo 'ERROR: Ilitek symbol table missing' >&2; exit 1; }
+make -C "$REPO_DIR" modules
+mkdir -p "$REPO_DIR/build"
+dtc -@ -I dts -O dtb -o "$REPO_DIR/build/ili79505a.dtbo" "$REPO_DIR/ili79505a-overlay.dts"
+[[ -s "$REPO_DIR/ilitek_v3/ilitek_v3_driver.ko" && \
+   -s "$REPO_DIR/panel-ili79505a.ko" && \
+   -s "$REPO_DIR/build/ili79505a.dtbo" ]] || { echo 'ERROR: incomplete build' >&2; exit 1; }
+
+# Unique, persistent, user-visible backup; never delete old source or modules.
+BACKUP_DIR="$REPO_DIR/backups/install-$(date +%Y%m%d-%H%M%S)-$$"
+mkdir -p "$BACKUP_DIR"
+backup() {
+    local src="$1" dest="$BACKUP_DIR/${1#/}"
+    if [[ -e "$src" || -L "$src" ]]; then
+        mkdir -p "$(dirname "$dest")"
+        cp -a -- "$src" "$dest"
     fi
-    tail -5 $PANEL_SRC/build.log
-    cp panel-ili9881c.ko $MODULES_DIR/kernel/drivers/gpu/drm/panel/
-    echo "  Panel driver installed"
-else
-    echo "  WARN: panel source not found, using built-in"
-fi
-cd "$REPO_DIR"
-
-# ---- 5. Clean old + blacklist ----
-echo "[5/8] Cleaning old drivers..."
-find /lib/modules -name "panel-ilitek-ili9881c.ko*" -delete 2>/dev/null || true
-rm -rf /var/lib/dkms/ili9881c /usr/src/ili9881c-* 2>/dev/null || true
-
-cat > /etc/modprobe.d/blacklist-goodix.conf << 'EOF'
-blacklist goodix_ts
-install goodix_ts /bin/false
-EOF
-echo "  goodix_ts blacklisted"
-
-# ---- 6. GT911 touch driver ----
-echo "[6/8] Building GT911 driver..."
-if [ -f "$REPO_DIR/gt911_poll.c" ]; then
-    cp "$REPO_DIR/Makefile" /tmp/gt911_build_Makefile 2>/dev/null || true
-    cd "$REPO_DIR"
-    make clean 2>/dev/null || true
-    if ! make >$REPO_DIR/gt911-build.log 2>&1; then
-        echo "ERROR: GT911 driver build failed"
-        tail -80 $REPO_DIR/gt911-build.log
-        exit 1
-    fi
-    tail -3 $REPO_DIR/gt911-build.log
-    cp gt911_poll.ko $MODULES_DIR/kernel/drivers/input/touchscreen/
-    echo "  GT911 driver installed"
-else
-    echo "  WARN: gt911_poll.c not found"
-fi
-
-# ---- 7. Auto-load ----
-echo "[7/8] Configuring auto-load..."
-echo "gt911_poll" > /etc/modules-load.d/gt911.conf
-echo "panel-ili9881c" > /etc/modules-load.d/panel-boe.conf
-depmod -a
-echo "  Done"
-
-# ---- 8. Default display rotation (Raspberry Pi OS / labwc) ----
-echo "[8/9] Setting default DSI rotation..."
-KANSHI_DIR="$TARGET_HOME/.config/kanshi"
-KANSHI_CONFIG=$KANSHI_DIR/config
-mkdir -p "$KANSHI_DIR"
-if [ -f "$KANSHI_CONFIG" ]; then
-    cp "$KANSHI_CONFIG" "$KANSHI_CONFIG.bak.$(date +%Y%m%d_%H%M%S)"
-fi
-cat > "$KANSHI_CONFIG" << 'KANSHIEOF'
-profile {
-    output DSI-1 enable scale 1.000000 mode 720x1280@60.038 position 0,0 transform 270
 }
-KANSHIEOF
-chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
-echo "  DSI-1 set to right rotation (transform 270)"
+PANEL_DEST="$MODULES_DIR/extra/panel-ili79505a.ko"
+TOUCH_DEST="$MODULES_DIR/kernel/drivers/input/touchscreen/ilitek_v3_driver.ko"
+OVERLAY_DEST="$BOOT_DIR/overlays/ili79505a.dtbo"
+MOD_LOAD=/etc/modules-load.d/panel-ili79505a.conf
+MOD_OPTIONS=/etc/modprobe.d/ilitek-v3-polling.conf
+CALIB_DEST=/usr/local/lib/ili79505a/touch_calib.py
+LABWC_RC="$TARGET_HOME/.config/labwc/rc.xml"
+KANSHI_CONFIG="$TARGET_HOME/.config/kanshi/config"
+STATE_FILE="$TARGET_HOME/.config/touch_calib.state"
+for existing in "$BOOT_DIR/config.txt" "$PANEL_DEST" "$TOUCH_DEST" \
+    "$OVERLAY_DEST" "$MOD_LOAD" "$MOD_OPTIONS" \
+    /etc/modules-load.d/gt911.conf /etc/modules-load.d/panel-boe.conf \
+    /usr/local/bin/touch_calib "$CALIB_DEST" "$LABWC_RC" \
+    "$KANSHI_CONFIG" "$STATE_FILE"; do
+    backup "$existing"
+done
+echo "[2/5] Backup ready: $BACKUP_DIR"
 
-# ---- 9. touch_calib ----
-echo "[9/9] Installing touch_calib..."
-if [ -f "$REPO_DIR/touch_calib.py" ]; then
-    mkdir -p "$TARGET_HOME/.config"
-    mkdir -p "$TARGET_HOME/shumei-chumoping"
-    if [ "$REPO_DIR/touch_calib.py" != "$TARGET_HOME/shumei-chumoping/touch_calib.py" ]; then
-        cp "$REPO_DIR/touch_calib.py" "$TARGET_HOME/shumei-chumoping/touch_calib.py"
+install -Dm0644 "$REPO_DIR/ilitek_v3/ilitek_v3_driver.ko" "$TOUCH_DEST"
+install -Dm0644 "$REPO_DIR/panel-ili79505a.ko" "$PANEL_DEST"
+install -Dm0644 "$REPO_DIR/build/ili79505a.dtbo" "$OVERLAY_DEST"
+install -Dm0644 "$REPO_DIR/ilitek-v3-polling.conf" "$MOD_OPTIONS"
+printf 'ilitek_v3_driver\npanel-ili79505a\n' > "$MOD_LOAD"
+# Archive obsolete autoload declarations rather than removing driver files.
+for old in /etc/modules-load.d/gt911.conf /etc/modules-load.d/panel-boe.conf; do
+    if [[ -f "$old" ]]; then
+        mkdir -p "$BACKUP_DIR/disabled/$(dirname "${old#/}")"
+        mv -- "$old" "$BACKUP_DIR/disabled/${old#/}"
     fi
-    chmod +x "$TARGET_HOME/shumei-chumoping/touch_calib.py"
-    ln -sf "$TARGET_HOME/shumei-chumoping/touch_calib.py" /usr/local/bin/touch_calib
-    "$TARGET_HOME/shumei-chumoping/touch_calib.py" reset 2>/dev/null || true
-    "$TARGET_HOME/shumei-chumoping/touch_calib.py" save 2>/dev/null || true
-    chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config" "$TARGET_HOME/shumei-chumoping"
-    echo "  touch_calib ready"
+done
+depmod -a "$KERNEL_VER"
+echo '[3/5] Modules and overlay installed (next boot will load Ilitek first)'
+
+# Raspberry Pi config sections are scoped: append a single known-good [all]
+# stanza after removing only settings that conflict with this panel.
+sed -i -E \
+    -e '/^# === ILI79505A display ===$/,/^# === END ILI79505A ===$/d' \
+    -e '/^[[:space:]]*dtoverlay=(boe-bv050fwm|ili79505a)([[:space:]]*(#.*)?)?$/d' \
+    -e '/^[[:space:]]*dtoverlay=vc4-kms-v3d(,.*)?([[:space:]]*#.*)?$/d' \
+    -e '/^[[:space:]]*dtoverlay=dummy-csi-sensor,2lanes([[:space:]]*#.*)?$/d' \
+    -e '/^[[:space:]]*dtparam=i2c_vc=on([[:space:]]*#.*)?$/d' \
+    "$BOOT_DIR/config.txt"
+printf '%s\n' '[all]' '# === ILI79505A display ===' \
+    'dtoverlay=vc4-kms-v3d,cma-256' 'dtparam=i2c_vc=on' \
+    'dtoverlay=ili79505a' 'dtoverlay=dummy-csi-sensor,2lanes' \
+    '# === END ILI79505A ===' >> "$BOOT_DIR/config.txt"
+echo '[4/5] Boot overlay configured; firmware/Flash left untouched'
+
+# The calibration tool never needs to unbind the shared display/touch IC.
+install -Dm0755 "$REPO_DIR/touch_calib.py" "$CALIB_DEST"
+ln -sfn "$CALIB_DEST" /usr/local/bin/touch_calib
+if [[ ! -e "$STATE_FILE" ]]; then
+    mkdir -p "$(dirname "$STATE_FILE")"
+    printf 'base=normal\nrotate=0\n' > "$STATE_FILE"
+    chown "$TARGET_USER:" "$STATE_FILE"
+fi
+if [[ ! -e "$KANSHI_CONFIG" ]]; then
+    mkdir -p "$(dirname "$KANSHI_CONFIG")"
+    printf 'profile {\n    output DSI-1 enable scale 1.000000 mode 720x1280 position 0,0 transform 270\n}\n' > "$KANSHI_CONFIG"
+    chown "$TARGET_USER:" "$KANSHI_CONFIG"
 fi
 
-# ---- Final ----
-echo ""
-echo "Updating initramfs..."
-update-initramfs -u 2>&1 | tail -2
+# Preserve existing calibrations; only supply the ILITEK_TDDI block if absent.
+LABWC_RC="$LABWC_RC" TARGET_USER="$TARGET_USER" python3 - <<'PY'
+import os
+import pathlib
+import pwd
+import re
 
-echo ""
-echo "============================================"
-echo " Install complete!  sudo reboot"
-echo "============================================"
+path = pathlib.Path(os.environ['LABWC_RC'])
+if path.exists():
+    text = path.read_text(encoding='utf-8')
+else:
+    text = '<openbox_config xmlns="http://openbox.org/3.4/rc">\n</openbox_config>\n'
+if not re.search(r'</openbox_config\s*>', text):
+    raise SystemExit('ERROR: labwc rc.xml has no closing openbox_config tag')
+add = ''
+if not re.search(r'<touch\b[^>]*deviceName=["\']ILITEK_TDDI["\']', text):
+    add += '  <touch deviceName="ILITEK_TDDI" mapToOutput="DSI-1" mouseEmulation="yes" />\n'
+if not re.search(r'<device\b[^>]*category=["\']ILITEK_TDDI["\']', text):
+    device = ('    <device category="ILITEK_TDDI">\n'
+              '      <calibrationMatrix>1 0 0 0 1 0</calibrationMatrix>\n'
+              '    </device>\n')
+    if re.search(r'</libinput\s*>', text):
+        text = re.sub(r'</libinput\s*>', lambda m: device + '  ' + m.group(), text, count=1)
+    else:
+        add += '  <libinput>\n' + device + '  </libinput>\n'
+if add:
+    text = re.sub(r'</openbox_config\s*>', lambda m: add + m.group(), text, count=1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding='utf-8')
+    owner = pwd.getpwnam(os.environ['TARGET_USER'])
+    os.chown(path, owner.pw_uid, owner.pw_gid)
+PY
+echo '[5/5] Calibration tool installed; saved base/rotation and desktop layout preserved'
+echo "Done. Backup: $BACKUP_DIR"
+echo 'Reboot when convenient: sudo reboot (installer does not reboot or flash firmware).'

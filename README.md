@@ -1,182 +1,59 @@
-# 树莓派触摸屏
+# ILI79505A HNH07 屏幕驱动（树莓派）
 
-BOE BV050FWM MIPI-DSI 面板 + GT911 触摸屏，树莓派 4B/CM4 完整驱动方案。
+这是基于原项目独立整理的 ILI79505A/TDDI 分支；原 BOE BV050FWM + GT911 方案保留在 `master`，不要用 `master` 的安装脚本安装本屏。
 
-## 一键安装
+在 Raspberry Pi 4B、64 位 Raspberry Pi OS、内核 `6.18.34+rpt-rpi-v8` 实测：清理已安装的旧驱动后，在板上重新编译、安装、重启，用户确认显示与触摸均正常。其他内核需有与当前运行内核完全匹配的 headers，并自行验证兼容性。
 
-```bash
-curl -sSL https://raw.githubusercontent.com/Wnjbk/shumei-chumoping/master/install.sh | sudo bash
-```
+## 接口与工作方式
 
-## 硬件连接
+| 项目 | 实测设置 |
+| --- | --- |
+| 面板 | ILI79505A HNH07，DRM 模式 720×1280，桌面横屏由 kanshi `transform 270` 实现 |
+| 传图 | Raspberry Pi DSI-1，2-lane RGB888；DSI 不发送面板初始化指令 |
+| 控制 | I²C-10，TDDI 芯片地址 `0x41`；背光开启前通过 Ilitek Linux I²C 驱动执行 TEST 初始化表 182 步 |
+| 电源 | TCA9555（`0x20`）P04 使能正负 5.8 V，P00 复位，P01 背光，P02 触摸复位，P03 触摸信号 |
+| 触摸 | `ILITEK_TDDI`，直接 I²C 轮询；校准 `base=normal`、`rotate=0`，矩阵 `1 0 0 0 1 0` |
 
-BV050FWM 面板通过 40-pin FPC 连接，I2C 总线（i2c-10）上挂载：
+驱动编译需要 `ilitek_v3/firmware/` 中随项目提供的 `.ili` 数据；安装脚本不会执行 Flash 烧录或固件擦除，运行时使用屏上现有固件。
 
-| 芯片 | I2C地址 | 功能 |
-|------|---------|------|
-| PCA9555 | 0x20 | GPIO 扩展器（LCD_RST, LCD_EN, TP_RST, TP_INT） |
-| GT911 | 0x5D | 触摸控制器 |
+## 在树莓派上安装
 
-PCA9555 引脚分配：
-
-| 引脚 | 标签 | 功能 |
-|------|------|------|
-| 0 | LCD_RST | 面板复位 |
-| 1 | LCD_EN | 背光使能 |
-| 2 | TP_RST | 触摸复位 |
-| 3 | TP_INT | 触摸中断（轮询模式下始终拉低） |
-
-## 新板子完整部署流程
-
-### 1. 烧录系统
-
-树莓派 OS（Bookworm，64-bit），确保内核版本 ≥ 6.6。
-
-### 2. 编译并安装 DT overlay
+不要 `curl | sudo bash`：脚本需要同目录的内核驱动、设备树和固件头文件。源码须放在板上持久目录，不能放 `/tmp`。
 
 ```bash
-# 编译
-dtc -@ -I dts -O dtb -o boe-bv050fwm.dtbo boe-bv050fwm-overlay.dts
-
-# 安装
-sudo cp boe-bv050fwm.dtbo /boot/firmware/overlays/
-```
-
-### 3. 配置 /boot/firmware/config.txt
-
-添加以下内容：
-
-```ini
-# DSI 显示
-dtoverlay=vc4-kms-v3d
-dtoverlay=boe-bv050fwm
-
-# I2C
-dtparam=i2c_vc=on
-```
-
-### 4. 编译并安装 GT911 轮询驱动
-
-```bash
-# 编译
-make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
-
-# 安装
-sudo cp gt911_poll.ko /lib/modules/$(uname -r)/kernel/drivers/input/touchscreen/
-sudo depmod -a
-```
-
-### 5. 编译并安装 ILI9881C 面板驱动（如果需要）
-
-内核通常已内置 `panel-ilitek-ili9881c` 模块。如需使用自定义版本：
-
-```bash
-cd ili9881c/
-make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
-sudo cp panel-ili9881c.ko /lib/modules/$(uname -r)/kernel/drivers/gpu/drm/panel/
-sudo depmod -a
-```
-
-### 6. 禁用原生 Goodix 驱动
-
-```bash
-sudo sh -c 'echo "blacklist goodix_ts" > /etc/modprobe.d/blacklist-goodix.conf'
-sudo sh -c 'echo "install goodix_ts /bin/false" >> /etc/modprobe.d/blacklist-goodix.conf'
-```
-
-### 7. 配置开机自动加载模块
-
-```bash
-sudo sh -c 'echo "gt911_poll" > /etc/modules-load.d/gt911.conf'
-```
-
-### 8. 重启
-
-```bash
+git clone --branch ili79505a-hnh07 https://github.com/Wnjbk/shumei-chumoping.git
+cd shumei-chumoping
+bash install.sh --check --user "$(id -un)"
+sudo bash install.sh
 sudo reboot
 ```
 
-### 9. 验证
+从 root shell 安装时显式指定桌面账号，如 `sudo bash install.sh --user wnk`（将 `wnk` 换成实际用户名）。脚本先编译 `ilitek_v3_driver.ko` 和 `Module.symvers`，再编译依赖该符号表的 `panel-ili79505a.ko`，生成 overlay 并配置开机加载顺序和 `polling=1`。编译产物留在项目目录；安装过程对被替换文件备份到项目 `backups/install-时间戳-PID/`，不会自动重启。
+
+安装不会覆盖已经保存的触摸方向或已存在的 kanshi 配置。全新配置才默认采用上表的横屏与单位矩阵。模块与设备树的修改在下一次重启生效。
+
+## 安装后核查
 
 ```bash
-# 检查 I2C 设备
-sudo i2cdetect -y 10
-# 应看到 0x20 (PCA9555) 和 0x5D (GT911)
-
-# 检查 GPIO 状态
-cat /sys/kernel/debug/gpio | grep TP
-# TP_RST=out hi, TP_INT=out lo
-
-# 检查触摸输入设备
-cat /proc/bus/input/devices | grep -A5 GT911
-
-# 测试触摸事件
-od -x /dev/input/$(cat /proc/bus/input/devices | grep -A1 GT911 | grep -o 'event[0-9]*')
+lsmod | grep -E 'ilitek_v3_driver|panel_ili79505a'
+cat /sys/module/ilitek_v3_driver/parameters/polling  # Y
+cat /sys/class/drm/card*-DSI-1/status             # connected
+cat /sys/class/drm/card*-DSI-1/modes              # 720x1280
+touch_calib show
+journalctl -b -k --no-pager | grep -E 'P03 polling|HNH07 page 6|TEST sequence transferred'
 ```
 
-## 文件说明
+`touch_calib show` 应识别 `ILITEK_TDDI`。实测校准为 `base=normal rotate=0`；如更换装配方向，可用 `touch_calib set base ...` / `touch_calib set rotate ...` 调整。不要用旧 GT911 脚本的 `reset`：显示与触摸共享一颗 TDDI 芯片。
 
-| 文件 | 说明 |
-|------|------|
-| `gt911_poll.c` | GT911 轮询模式触摸驱动源码 |
-| `Makefile` | GT911 驱动编译脚本 |
-| `boe-bv050fwm-overlay.dts` | DT overlay（PCA9555 + GT911 + DSI panel） |
-| `ili9881c_panel-ilitek-ili9881c.c` | ILI9881C MIPI-DSI 面板驱动 |
-| `ili9881c_panel-ili9881c.c` | ILI9881C 面板驱动（辅助） |
-| `ili9881c_Makefile` | ILI9881C 驱动编译脚本 |
-| `config.txt` | 树莓派 `/boot/firmware/config.txt` 参考配置 |
+回退时先找到最近的 `backups/install-*/`，检查其中的相对目录结构，按原路径恢复所需的 `config.txt`、`.ko`、`.dtbo` 和开机配置，再运行 `sudo depmod -a`、重启；备份文件不存在表示原路径此前不存在。若从旧项目迁移，旧文件可能另存于 `backups/redeploy-*/removed/`。
 
-## 触摸校准
+## 文件索引
 
-`touch_calib.py` 提供触摸旋转与翻转的即时配置，无需重启。
+- `panel-ili79505a.c`：DRM 面板，仅使用 DSI 承载视频。
+- `ili79505a-overlay.dts`：DSI、TCA9555、I²C TDDI 连线。
+- `ili79505a_test_cmds.h`：供应商 TEST 面板初始化表。
+- `ilitek_v3/`：触摸轮询、I²C DDI 命令与构建必需的内嵌固件数据。
+- `install.sh`、`ilitek-v3-polling.conf`、`touch_calib.py`：安装、开机轮询参数、触摸映射工具。
+- `config.txt`：参考开机配置；安装脚本不会整文件覆盖现有配置。
 
-### 安装
-
-```bash
-sudo ln -s $(pwd)/touch_calib.py /usr/local/bin/touch_calib
-```
-
-### 两层结构
-
-| 层 | 作用 | 选项 |
-|----|------|------|
-| **base** | 硬件修正（换屏才改） | `normal`, `flip-x`, `flip-y` |
-| **rotate** | 匹配显示方向 | `0`, `90`, `180`, `270` |
-
-矩阵乘积顺序：`rotate × base`（先修正硬件，再旋转匹配显示）。
-
-### 常用命令
-
-```bash
-touch_calib show                   # 查看当前状态
-touch_calib set rotate 270         # 横屏（匹配 kanshi transform 270）
-touch_calib set rotate 0           # 竖屏
-touch_calib set base flip-y        # Y 轴翻转（硬件修正）
-touch_calib reset                  # 恢复出厂默认
-touch_calib save                   # 持久化（重启不丢）
-```
-
-每次 `set` 即时生效：写入 udev 规则 → 重绑 GT911 驱动 → 重启 labwc。
-
-### 状态文件
-
-- 运行时状态：`~/.config/touch_calib.state`
-- udev 规则：`/etc/udev/rules.d/98-gt911-calibration.rules`
-
-## GT911 驱动技术说明
-
-- **地址稳定方案**：INT 引脚始终输出低电平（GPIOD_OUT_LOW），使 GT911 在 RST 上升沿采样到 INT=low，地址固定为 0x5D
-- **触摸检测**：轮询状态寄存器 0x814E，bit7=1 表示有触摸数据
-- **触摸上报**：此 GT911 变体不设置 p[0] bit7（触摸/释放标志），因此始终上报 `MT_TOOL_FINGER, true`
-- **配置写入**：驱动启动时检测 GT911 配置版本号（0x8047），若版本 ≠ 0 则保留现有配置，否则写入新配置
-- 轮询间隔默认 10ms，分辨率 1280x720
-
-## 替代文件
-
-在 `config/` 目录下提供了所有系统配置文件的参考副本，可直接使用：
-
-```
-config/config.txt                         → /boot/firmware/config.txt
-config/modules-load_gt911.conf            → /etc/modules-load.d/gt911.conf
-config/modprobe_blacklist-goodix.conf     → /etc/modprobe.d/blacklist-goodix.conf
-```
+原仓库 BOE/GT911 源码仍可在旧版历史中查阅，但不属于本屏的安装步骤。

@@ -51,5 +51,5 @@ dtoverlay=dwc2,dr_mode=host
 dtoverlay=uart2
 enable_uart=1
 dtparam=i2c_vc=on
-dtoverlay=boe-bv050fwm
+dtoverlay=ili79505a
 dtoverlay=dummy-csi-sensor,2lanes

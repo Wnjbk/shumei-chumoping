@@ -2,10 +2,9 @@
 /dts-v1/;
 /plugin/;
 
-// Updated BOE BV050FWM overlay with GT911 touchscreen node
-// GT911 shares I2C bus with PCA9555 on i2c0mux/i2c@1
-// No IRQ pin -> polling mode
-
+/* From the supplied BOE/GT911 ZIP: keep the DSI1/TCA9555 wiring, replace
+ * the panel and I2C client with ILI79505A. P04 enables the +/-5.8 V bias.
+ */
 / {
     compatible = "brcm,bcm2711";
 
@@ -16,23 +15,20 @@
             #address-cells = <1>;
             #size-cells = <0>;
 
-            pca9555: gpio@20 {
+            gpioexp: gpio@20 {
                 compatible = "nxp,pca9555";
                 reg = <0x20>;
                 gpio-controller;
                 #gpio-cells = <2>;
-                status = "okay";
-                gpio-line-names = "LCD_RST", "LCD_EN", "TP_RST", "TP_INT";
+                gpio-line-names = "LCD_RST", "LCD_EN", "TP_RST",
+                                  "TP_INT", "LCD_BIAS_EN";
             };
 
-            // GT911 touchscreen on same I2C bus
-            // irq-gpios is REQUIRED even in polling mode: the INT pin
-            // must be pulled high during init or GT911 won't scan.
-            gt911: touchscreen@5d {
-                compatible = "goodix,gt911";
-                reg = <0x5d>;
-                reset-gpios = <&pca9555 2 0>;
-                irq-gpios = <&pca9555 3 0>;
+            ilitek: touchscreen@41 {
+                compatible = "tchip,ilitek";
+                reg = <0x41>;
+                touch,reset-gpio = <&gpioexp 2 0>;
+                touch,irq-gpio = <&gpioexp 3 0>;
             };
         };
     };
@@ -43,13 +39,13 @@
             status = "okay";
             #address-cells = <1>;
             #size-cells = <0>;
-            panel: panel@0 {
-                status = "okay";
-                compatible = "boe,bv050fwm";
-                reg = <0>;
 
-                reset-gpios = <&pca9555 0 1>;
-                backlight-gpios = <&pca9555 1 0>;
+            panel: panel@0 {
+                compatible = "ilitek,ili79505a-panel";
+                reg = <0>;
+                reset-gpios = <&gpioexp 0 1>;
+                backlight-gpios = <&gpioexp 1 0>;
+                power-gpios = <&gpioexp 4 0>;
 
                 port {
                     panel_in: endpoint {
@@ -69,8 +65,6 @@
 
     fragment@2 {
         target = <&spidev0>;
-        __overlay__ {
-            status = "disabled";
-        };
+        __overlay__ { status = "disabled"; };
     };
 };
