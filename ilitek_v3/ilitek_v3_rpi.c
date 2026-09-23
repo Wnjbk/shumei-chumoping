@@ -29,12 +29,13 @@
 
 static struct delayed_work ilitek_poll_work;
 static bool ilitek_polling;
+static bool ili79505a_touch_info_valid;
 module_param_named(polling, ilitek_polling, bool, 0644);
 MODULE_PARM_DESC(polling, "Enable ILI79505A P03 polling");
 
 static void ilitek_poll_work_fn(struct work_struct *work)
 {
-	if (ilits && ilits->boot && ilits->report &&
+	if (ilits && ilits->boot && ilits->input && ilits->report &&
 	    !mutex_is_locked(&ilits->touch_mutex) &&
 	    !atomic_read(&ilits->tp_reset) &&
 	    !atomic_read(&ilits->ignore_report) &&
@@ -77,6 +78,81 @@ void ili_tp_reset(void)
 		ilits->rst_edge_delay = rst_edge_delay;
 	}
 }
+
+/* The panel owns LCD reset (P00); the touch driver alone owns TP reset (P02).
+ * Serialize a hardware reset with the 10 ms touch poller before DDI setup.
+ */
+int ili79505a_panel_reset_touch(void)
+{
+	int ret, attempt, info_ret;
+	bool from_hex;
+	u8 data_type = P5_X_FW_SIGNAL_DATA_MODE;
+
+	if (!ilits || !ilits->i2c || !ilits->boot ||
+	    !gpio_is_valid(ilits->tp_rst))
+		return -ENODEV;
+
+	mutex_lock(&ilits->touch_mutex);
+	ili79505a_touch_info_valid = false;
+	if (ilits->input)
+		ili_touch_release_all_point();
+	ret = ili_reset_ctrl(TP_HW_RST_ONLY);
+	if (!ret && ilits->chip) {
+		/* The touch driver may have read firmware info before P04 bias
+		 * came up. Refresh the live protocol/version after this reset;
+		 * info_from_hex otherwise returns the stale boot-time cache.
+		 */
+		from_hex = ilits->info_from_hex;
+		ilits->info_from_hex = DISABLE;
+		for (attempt = 0; attempt < 3; attempt++) {
+			if (!ili_ic_get_protocl_ver() && !ili_ic_get_fw_ver()) {
+				if (ili_ic_get_core_ver() >= 0 &&
+				    ili_ic_get_tp_info() >= 0 &&
+				    ili_ic_get_panel_info() >= 0 &&
+				    ilits->max_x && ilits->max_y &&
+				    ilits->panel_wid && ilits->panel_hei) {
+					ili_ic_get_report_info();
+					info_ret = ili_set_tp_data_len(
+						DATA_FORMAT_DEMO, false, &data_type);
+					if (info_ret >= 0 && ilits->tp_data_len) {
+						ili79505a_touch_info_valid = true;
+						break;
+					}
+				}
+			}
+			msleep(50);
+		}
+		ilits->info_from_hex = from_hex;
+		if (attempt == 3)
+			ILI_ERR("panel prepare: touch report info unavailable after reset\n");
+		else
+			ILI_INFO("panel prepare: touch ready, TP %ux%u, report %d bytes\n",
+				 ilits->max_x, ilits->max_y, ilits->tp_data_len);
+	}
+	mutex_unlock(&ilits->touch_mutex);
+	if (!ret)
+		ILI_INFO("panel prepare: touch reset completed before DDI init\n");
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ili79505a_panel_reset_touch);
+
+int ili79505a_panel_touch_ready(void)
+{
+	if (!ili79505a_touch_info_valid || !ilits || !ilits->boot || !ilits->chip ||
+	    !ilits->chip->fw_ver || !ilits->max_x || !ilits->max_y ||
+	    !ilits->tp_data_len)
+		return -EIO;
+
+	mutex_lock(&ilits->touch_mutex);
+	if (!ilits->input) {
+		ili_input_register();
+		ili_input_pen_register();
+		ILI_INFO("panel initialized: touch input registered\n");
+	}
+	mutex_unlock(&ilits->touch_mutex);
+	return ilits->input ? 0 : -ENOMEM;
+}
+EXPORT_SYMBOL_GPL(ili79505a_panel_touch_ready);
 
 void ili_input_register(void)
 {

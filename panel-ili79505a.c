@@ -11,6 +11,8 @@
 
 /* The Ilitek V3 I2C driver owns the 0x41 client and serializes its packets. */
 extern int ili79505a_panel_run_test_sequence(void);
+extern int ili79505a_panel_reset_touch(void);
+extern int ili79505a_panel_touch_ready(void);
 
 struct ili79505a_panel {
     struct drm_panel panel;
@@ -46,17 +48,37 @@ static int ili79505a_prepare(struct drm_panel *panel)
     gpiod_set_value_cansleep(ctx->reset, 0);
     usleep_range(10000, 11000);
 
+    /* P02 is owned by the Ilitek driver; reset touch after LCD reset and
+     * before sending any I2C DDI packets. This also covers warm reboots.
+     */
+    ret = ili79505a_panel_reset_touch();
+    if (ret) {
+        dev_err(panel->dev, "ILI79505A touch reset failed: %d\n", ret);
+        goto reset_failed;
+    }
+
     /* No DSI commands: all TEST register packets go through Ilitek I2C. */
     ret = ili79505a_panel_run_test_sequence();
     if (ret) {
         dev_err(panel->dev, "ILI79505A I2C initialization failed: %d\n", ret);
-        gpiod_set_value_cansleep(ctx->reset, 1);
-        gpiod_set_value_cansleep(ctx->bias, 0);
-        return ret;
+        goto reset_failed;
     }
+
+    /* Register touch only when post-bias, post-reset FW metadata and the
+     * full display initialization are available. Keep video working if
+     * touch is temporarily unavailable, and log it for diagnosis.
+     */
+    ret = ili79505a_panel_touch_ready();
+    if (ret)
+        dev_warn(panel->dev, "ILI79505A touch not ready: %d\n", ret);
 
     ctx->prepared = true;
     return 0;
+
+reset_failed:
+    gpiod_set_value_cansleep(ctx->reset, 1);
+    gpiod_set_value_cansleep(ctx->bias, 0);
+    return ret;
 }
 
 static int ili79505a_enable(struct drm_panel *panel)

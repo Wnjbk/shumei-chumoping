@@ -1562,6 +1562,8 @@ extern void ili_report_i2cuart_mode(u8 *buf, int rlen);
 extern void ili_ic_set_ddi_reg_onepage(u8 page, u8 reg, u8 data, bool mcu, bool reset);
 extern int ili_tddi_panel_set_2lane(void);
 extern int ili79505a_panel_run_test_sequence(void);
+extern int ili79505a_panel_reset_touch(void);
+extern int ili79505a_panel_touch_ready(void);
 extern void ili_ic_get_ddi_reg_onepage(u8 page, u8 reg, u8 *data, bool mcu, bool reset);
 extern void ili_ic_set_cascade_ddi_reg_onepage(u8 page, u8 reg, u8 data, bool mcu, bool reset);
 extern void ili_ic_get_cascade_ddi_reg_onepage(u8 page, u8 reg, u8 *data, bool mcu, bool reset);

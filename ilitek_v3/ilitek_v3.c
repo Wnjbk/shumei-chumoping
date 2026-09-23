@@ -1785,10 +1785,17 @@ int ili_tddi_init(void)
 	ilits->info_from_hex = ENABLE;
 #endif
 
+#if (TDDI_INTERFACE == BUS_I2C)
+	/* On this board P04 bias comes up in the panel prepare callback. The
+	 * probe-time TP information can be invalid until that callback resets
+	 * the shared TDDI chip. Register input only after panel initialization.
+	 */
+	ILI_INFO("Defer touch input registration until panel is ready\n");
+#else
 	ILI_INFO("Registre touch to input subsystem\n");
 	ili_input_register();
-
 	ili_input_pen_register();
+#endif
 
 	ili_wq_ctrl(WQ_ESD, ENABLE);
 	ili_wq_ctrl(WQ_BAT, ENABLE);
