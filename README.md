@@ -30,7 +30,7 @@ sudo reboot
 
 从 root shell 安装时显式指定桌面账号，如 `sudo bash install.sh --user wnk`（将 `wnk` 换成实际用户名）。脚本先编译 `ilitek_v3_driver.ko` 和 `Module.symvers`，再编译依赖该符号表的 `panel-ili79505a.ko`，生成 overlay 并配置开机加载顺序和 `polling=1`。编译产物留在项目目录；安装过程对被替换文件备份到项目 `backups/install-时间戳-PID/`，不会自动重启。
 
-安装不会覆盖已经保存的触摸方向或已存在的 kanshi 配置。全新配置才默认采用上表的横屏与单位矩阵。模块与设备树的修改在下一次重启生效。
+安装会先备份，再无条件把 kanshi 输出设置为横屏 `transform 270`，把 `touch_calib` 状态设为 `base=normal rotate=0`，并将 labwc 中 `ILITEK_TDDI` 的矩阵改为单位矩阵；其他 labwc 设置保持不变。旧屏自定义方向需要在安装之后重新设置。模块与设备树的修改在下一次重启生效。
 
 ## 安装后核查
 

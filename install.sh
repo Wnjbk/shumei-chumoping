@@ -162,16 +162,12 @@ for config_dir in "$TARGET_HOME/.config" "$TARGET_HOME/.config/kanshi" "$TARGET_
         chown "$TARGET_USER:" "$config_dir"
     fi
 done
-if [[ ! -s "$STATE_FILE" ]]; then
-    printf 'base=normal\nrotate=0\n' > "$STATE_FILE"
-    chown "$TARGET_USER:" "$STATE_FILE"
-fi
-if [[ ! -s "$KANSHI_CONFIG" ]]; then
-    printf 'profile {\n    output DSI-1 enable scale 1.000000 mode 720x1280 position 0,0 transform 270\n}\n' > "$KANSHI_CONFIG"
-    chown "$TARGET_USER:" "$KANSHI_CONFIG"
-fi
+printf 'base=normal\nrotate=0\n' > "$STATE_FILE"
+chown "$TARGET_USER:" "$STATE_FILE"
+printf 'profile {\n    output DSI-1 enable scale 1.000000 mode 720x1280 position 0,0 transform 270\n}\n' > "$KANSHI_CONFIG"
+chown "$TARGET_USER:" "$KANSHI_CONFIG"
 
-# Preserve existing calibrations; only supply the ILITEK_TDDI block if absent.
+# Replace only this panel's calibration; keep unrelated labwc settings.
 LABWC_RC="$LABWC_RC" TARGET_USER="$TARGET_USER" python3 - <<'PY'
 import os
 import pathlib
@@ -186,11 +182,26 @@ else:
 if not re.search(r'</openbox_config\s*>', text):
     raise SystemExit('ERROR: labwc rc.xml has no closing openbox_config tag')
 add = ''
-if not re.search(r'<touch\b[^>]*deviceName=["\']ILITEK_TDDI["\']', text):
-    add += '  <touch deviceName="ILITEK_TDDI" mapToOutput="DSI-1" mouseEmulation="yes" />\n'
-if not re.search(r'<device\b[^>]*category=["\']ILITEK_TDDI["\']', text):
+touch = '<touch deviceName="ILITEK_TDDI" mapToOutput="DSI-1" mouseEmulation="yes" />'
+touch_pattern = r'<touch\b(?=[^>]*\bdeviceName=["\']ILITEK_TDDI["\'])[^>]*>'
+if re.search(touch_pattern, text):
+    text = re.sub(touch_pattern, touch, text, count=1)
+else:
+    add += '  ' + touch + '\n'
+matrix = '<calibrationMatrix>1 0 0 0 1 0</calibrationMatrix>'
+device_pattern = r'<device\b(?=[^>]*\bcategory=["\']ILITEK_TDDI["\'])[^>]*>.*?</device\s*>'
+device_match = re.search(device_pattern, text, flags=re.S)
+if device_match:
+    device = device_match.group()
+    matrix_pattern = r'<calibrationMatrix\b[^>]*>.*?</calibrationMatrix\s*>'
+    if re.search(matrix_pattern, device, flags=re.S):
+        device = re.sub(matrix_pattern, matrix, device, count=1, flags=re.S)
+    else:
+        device = re.sub(r'</device\s*>', '      ' + matrix + '\n    </device>', device, count=1)
+    text = text[:device_match.start()] + device + text[device_match.end():]
+else:
     device = ('    <device category="ILITEK_TDDI">\n'
-              '      <calibrationMatrix>1 0 0 0 1 0</calibrationMatrix>\n'
+              '      ' + matrix + '\n'
               '    </device>\n')
     if re.search(r'</libinput\s*>', text):
         text = re.sub(r'</libinput\s*>', lambda m: device + '  ' + m.group(), text, count=1)
@@ -198,11 +209,11 @@ if not re.search(r'<device\b[^>]*category=["\']ILITEK_TDDI["\']', text):
         add += '  <libinput>\n' + device + '  </libinput>\n'
 if add:
     text = re.sub(r'</openbox_config\s*>', lambda m: add + m.group(), text, count=1)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding='utf-8')
-    owner = pwd.getpwnam(os.environ['TARGET_USER'])
-    os.chown(path, owner.pw_uid, owner.pw_gid)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(text, encoding='utf-8')
+owner = pwd.getpwnam(os.environ['TARGET_USER'])
+os.chown(path, owner.pw_uid, owner.pw_gid)
 PY
-echo '[5/5] Calibration tool installed; saved base/rotation and desktop layout preserved'
+echo '[5/5] Calibration tool installed; DSI rotation and ILITEK_TDDI mapping reset to the tested defaults'
 echo "Done. Backup: $BACKUP_DIR"
 echo 'Reboot when convenient: sudo reboot (installer does not reboot or flash firmware).'
